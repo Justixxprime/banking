@@ -120,6 +120,14 @@ const migrations = [
       );
       CREATE INDEX "IDX_session_expire" ON "session" ("expire");
     `
+  },
+  {
+    id: 2,
+    name: 'profile fields',
+    sql: `
+      ALTER TABLE users ADD COLUMN phone TEXT, ADD COLUMN address TEXT, ADD COLUMN city TEXT, ADD COLUMN country TEXT, ADD COLUMN updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+      ALTER TABLE admin_users ADD COLUMN updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+    `
   }
 ];
 

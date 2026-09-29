@@ -43,7 +43,12 @@ app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, '../public/ind
 // Health check for the host. It must NOT touch the database, or it would keep the free database awake all day.
 app.get('/healthz', (req, res) => res.json({ ok: true }));
 
-const requireCustomer = (req, res, next) => (!req.session.user || req.session.user.role !== 'customer') ? res.status(401).json({ error: 'Please sign in as a customer.' }) : next();
+const requireCustomer = wrap(async (req, res, next) => {
+  if (!req.session.user || req.session.user.role !== 'customer') return res.status(401).json({ error: 'Please sign in as a customer.' });
+  const { rows: [row] } = await query('SELECT status FROM users WHERE id = $1', [req.session.user.id]);
+  if (!row || row.status !== 'ACTIVE') { await new Promise(resolve => req.session.destroy(resolve)); return res.status(401).json({ error: 'Your session has ended. Please sign in again.' }); }
+  next();
+});
 const requireAdmin = (req, res, next) => (!req.session.user || req.session.user.role !== 'admin') ? res.status(401).json({ error: 'Administrator access is required.' }) : next();
 
 const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standardHeaders: true, legacyHeaders: false, message: { error: 'Too many sign-in attempts. Please wait a few minutes and try again.' } });
@@ -64,6 +69,49 @@ app.post('/api/auth/login', loginLimiter, wrap(async (req, res) => {
 }));
 app.post('/api/auth/logout', (req, res) => req.session.destroy(() => { res.clearCookie('aurum.sid'); res.status(204).end(); }));
 app.get('/api/auth/me', (req, res) => res.json({ user: req.session.user || null }));
+
+const endSessions = (role, id, keepSid = '') => query(`DELETE FROM "session" WHERE sess->'user'->>'role' = $1 AND sess->'user'->>'id' = $2 AND sid <> $3`, [role, String(id), keepSid]);
+async function changePassword(table, id, current, next, minLength) {
+  if (typeof next !== 'string' || next.length < minLength || next.length > 100) throw new HttpError(400, `The new password must be ${minLength}-100 characters.`);
+  const { rows: [row] } = await query(`SELECT password_hash FROM ${table} WHERE id = $1`, [id]);
+  if (!row || typeof current !== 'string' || !(await bcrypt.compare(current, row.password_hash))) throw new HttpError(403, 'Your current password is incorrect.');
+  await query(`UPDATE ${table} SET password_hash = $1, updated_at = now() WHERE id = $2`, [await bcrypt.hash(next, 12), id]);
+}
+// Optional short text: returns null when the value is too long or not text.
+const textField = (value, max) => (typeof value === 'string' && value.trim().length <= max ? value.trim() : null);
+const PROFILE_FIELDS = { phone: 30, address: 120, city: 60, country: 60 };
+
+app.get('/api/customer/profile', requireCustomer, wrap(async (req, res) => {
+  const { rows: [profile] } = await query('SELECT id, name, email, phone, address, city, country FROM users WHERE id = $1', [req.session.user.id]);
+  res.json({ profile });
+}));
+app.patch('/api/customer/profile', requireCustomer, wrap(async (req, res) => {
+  const body = req.body || {};
+  const name = textField(body.name, 80);
+  if (!name) throw new HttpError(400, 'Enter your name (up to 80 characters).');
+  const values = [name]; const sets = ['name = $1'];
+  for (const [field, max] of Object.entries(PROFILE_FIELDS)) {
+    const value = body[field] === undefined ? undefined : textField(body[field], max);
+    if (value === null) throw new HttpError(400, `${field} is too long.`);
+    if (value !== undefined) { values.push(value || null); sets.push(`${field} = $${values.length}`); }
+  }
+  values.push(req.session.user.id);
+  await query(`UPDATE users SET ${sets.join(', ')}, updated_at = now() WHERE id = $${values.length}`, values);
+  await audit(pool, null, 'CUSTOMER_PROFILE_UPDATED', `customer_id=${req.session.user.id}`);
+  req.session.user.name = name;
+  res.json({ ok: true, name });
+}));
+app.post('/api/customer/security/password', requireCustomer, wrap(async (req, res) => {
+  await changePassword('users', req.session.user.id, req.body?.currentPassword, req.body?.newPassword, 8);
+  await endSessions('customer', req.session.user.id, req.sessionID);
+  await query('INSERT INTO notifications (user_id, title, body) VALUES ($1, $2, $3)', [req.session.user.id, 'Password changed', 'Your password was changed and other devices were signed out.']);
+  await audit(pool, null, 'CUSTOMER_PASSWORD_CHANGED', `customer_id=${req.session.user.id}`);
+  res.json({ ok: true });
+}));
+app.post('/api/customer/security/sign-out-others', requireCustomer, wrap(async (req, res) => {
+  await endSessions('customer', req.session.user.id, req.sessionID);
+  res.json({ ok: true });
+}));
 
 app.get('/api/customer/dashboard', requireCustomer, wrap(async (req, res) => {
   const uid = req.session.user.id;
@@ -182,6 +230,8 @@ app.patch('/api/admin/accounts/:id', requireAdmin, wrap(async (req, res) => {
   if (status !== undefined) { if (!['ACTIVE', 'SUSPENDED'].includes(status)) throw new HttpError(400, 'Unsupported account status.'); add('status', status); changes.push(`status=${status}`); }
   if (transfersEnabled !== undefined) { add('transfers_enabled', Boolean(transfersEnabled)); changes.push(`transfers_enabled=${Boolean(transfersEnabled)}`); }
   if (balance !== undefined) { const amount = roundMoney(balance); if (!Number.isFinite(amount) || amount < 0 || amount > MAX_MONEY) throw new HttpError(400, 'Balance must be zero or greater.'); add('balance', amount); add('available_balance', amount); changes.push(`balance=${amount.toFixed(2)}`); }
+  if (req.body?.name !== undefined) { const accountName = textField(req.body.name, 80); if (!accountName) throw new HttpError(400, 'Enter a valid account name.'); add('name', accountName); changes.push('name'); }
+  if (req.body?.accountType !== undefined) { if (!['CURRENT', 'SAVINGS', 'BUSINESS'].includes(req.body.accountType)) throw new HttpError(400, 'Unsupported account type.'); add('account_type', req.body.accountType); changes.push(`account_type=${req.body.accountType}`); }
   if (!sets.length) throw new HttpError(400, 'Choose an account setting to update.');
   await withTransaction(async client => {
     values.push(id);
@@ -190,6 +240,68 @@ app.patch('/api/admin/accounts/:id', requireAdmin, wrap(async (req, res) => {
     await audit(client, req.session.user.id, 'ACCOUNT_UPDATED', `account_id=${id}; ${changes.join(', ')}`);
   });
   res.json({ ok: true });
+}));
+
+app.get('/api/admin/profile', requireAdmin, wrap(async (req, res) => {
+  const { rows: [profile] } = await query('SELECT id, name, email FROM admin_users WHERE id = $1', [req.session.user.id]);
+  res.json({ profile });
+}));
+app.patch('/api/admin/profile', requireAdmin, wrap(async (req, res) => {
+  const name = textField(req.body?.name, 80); const email = normalizeEmail(req.body?.email);
+  if (!name || !/^\S+@\S+\.\S+$/.test(email)) throw new HttpError(400, 'Enter a name and a valid email address.');
+  try {
+    await withTransaction(async client => {
+      await client.query('UPDATE admin_users SET name = $1, email = $2, updated_at = now() WHERE id = $3', [name, email, req.session.user.id]);
+      await audit(client, req.session.user.id, 'ADMIN_PROFILE_UPDATED', `admin_id=${req.session.user.id}`);
+    });
+  } catch (error) { if (error.code === '23505') throw new HttpError(409, 'That email address is already used.'); throw error; }
+  req.session.user.name = name;
+  res.json({ ok: true, name });
+}));
+app.post('/api/admin/security/password', requireAdmin, wrap(async (req, res) => {
+  await changePassword('admin_users', req.session.user.id, req.body?.currentPassword, req.body?.newPassword, 10);
+  await endSessions('admin', req.session.user.id, req.sessionID);
+  await audit(pool, req.session.user.id, 'ADMIN_PASSWORD_CHANGED', `admin_id=${req.session.user.id}`);
+  res.json({ ok: true });
+}));
+
+app.get('/api/admin/customers/:id', requireAdmin, wrap(async (req, res) => {
+  const id = toId(req.params.id);
+  const { rows: [customer] } = id ? await query('SELECT id, name, email, status, phone, address, city, country, created_at FROM users WHERE id = $1', [id]) : { rows: [] };
+  if (!customer) throw new HttpError(404, 'Customer not found.');
+  const accounts = await query('SELECT * FROM accounts WHERE user_id = $1 ORDER BY id', [id]);
+  res.json({ customer, accounts: accounts.rows });
+}));
+app.patch('/api/admin/customers/:id', requireAdmin, wrap(async (req, res) => {
+  const id = toId(req.params.id); const body = req.body || {};
+  const sets = []; const values = []; const changed = [];
+  const add = (column, value) => { values.push(value); sets.push(`${column} = $${values.length}`); changed.push(column); };
+  if (body.name !== undefined) { const name = textField(body.name, 80); if (!name) throw new HttpError(400, 'Enter a valid name.'); add('name', name); }
+  if (body.email !== undefined) { const email = normalizeEmail(body.email); if (!/^\S+@\S+\.\S+$/.test(email)) throw new HttpError(400, 'Enter a valid email address.'); add('email', email); }
+  if (body.status !== undefined) { if (!['ACTIVE', 'SUSPENDED'].includes(body.status)) throw new HttpError(400, 'Unsupported customer status.'); add('status', body.status); }
+  for (const [field, max] of Object.entries(PROFILE_FIELDS)) if (body[field] !== undefined) { const value = textField(body[field], max); if (value === null) throw new HttpError(400, `${field} is too long.`); add(field, value || null); }
+  if (body.password !== undefined) { if (typeof body.password !== 'string' || body.password.length < 8 || body.password.length > 100) throw new HttpError(400, 'A reset password needs 8-100 characters.'); add('password_hash', await bcrypt.hash(body.password, 12)); changed[changed.length - 1] = 'password_reset'; }
+  if (!sets.length) throw new HttpError(400, 'Choose something to update.');
+  try {
+    await withTransaction(async client => {
+      values.push(id);
+      const result = id ? await client.query(`UPDATE users SET ${sets.join(', ')}, updated_at = now() WHERE id = $${values.length}`, values) : { rowCount: 0 };
+      if (!result.rowCount) throw new HttpError(404, 'Customer not found.');
+      await audit(client, req.session.user.id, 'CUSTOMER_UPDATED', `customer_id=${id}; ${changed.join(', ')}${body.status ? `; status=${body.status}` : ''}`);
+    });
+  } catch (error) { if (error.code === '23505') throw new HttpError(409, 'That email address is already used.'); throw error; }
+  if (body.status === 'SUSPENDED' || body.password !== undefined) await endSessions('customer', id);
+  res.json({ ok: true });
+}));
+app.get('/api/admin/audit', requireAdmin, wrap(async (req, res) => {
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 25, 1), 100);
+  const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+  const action = typeof req.query.action === 'string' && req.query.action ? req.query.action.slice(0, 60) : null;
+  const [rows, total] = await Promise.all([
+    query('SELECT l.*, a.name AS admin_name FROM audit_logs l LEFT JOIN admin_users a ON a.id = l.admin_id WHERE ($1::text IS NULL OR l.action = $1) ORDER BY l.created_at DESC, l.id DESC LIMIT $2 OFFSET $3', [action, limit, offset]),
+    query('SELECT COUNT(*) AS count FROM audit_logs WHERE ($1::text IS NULL OR action = $1)', [action])
+  ]);
+  res.json({ logs: rows.rows, total: total.rows[0].count, limit, offset });
 }));
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found.' }));

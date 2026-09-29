@@ -7,3 +7,5 @@ Tables: `users` (bcrypt hash, `status` ACTIVE/SUSPENDED), `admin_users`, `accoun
 Money is exact `NUMERIC(14,2)`; the driver converts it to JavaScript numbers so API output is unchanged. Timestamps are `TIMESTAMPTZ` (returned as ISO strings). Transfers run in one transaction with `SELECT ... FOR UPDATE` on the source account. Receipts are still generated from `transactions`.
 
 Old data: `scripts/migrate-sqlite-to-postgres.js` copies `data/aurum-sim.db` (opened read-only) into an empty Postgres database, keeps ids, resets id counters, and verifies row counts and money totals before committing.
+
+Migration 2 (profile fields): `users` gains `phone`, `address`, `city`, `country`, `updated_at`; `admin_users` gains `updated_at`. Applied automatically on the next start. Sessions of a user can be ended with `DELETE FROM "session" WHERE sess->'user'->>'role' = $1 AND sess->'user'->>'id' = $2`.
