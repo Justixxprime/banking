@@ -14,3 +14,5 @@ Aurum Sim now stores its data in PostgreSQL (Neon), not in a local SQLite file.
 5. `npm start`, then open http://localhost:3000 (customer) or http://localhost:3000/admin (administrator).
 
 Stop with `Ctrl+C`. `npm run dev` restarts automatically while editing. The SQLite file is never modified or required after the copy.
+
+If you accidentally replace the local dev database and the demo administrator password no longer works, set a new local `ADMIN_EMAIL` and 10+ character `ADMIN_PASSWORD` in `.env`, then run `npm run admin:reset-local`. This command refuses to run in production and only works when the database has exactly one administrator.
