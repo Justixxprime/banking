@@ -1,6 +1,6 @@
 # Next steps
 
-1. Add customer and account CRUD endpoints for administrators.
-2. Add editable account status and per-account transfer settings.
-3. Add database migrations and Node test coverage.
-4. Extract route, service and validation modules.
+1. Manually verify every new customer Profile and administrator form in a browser.
+2. Add fuller API integration tests using a separately configured disposable test database; never use Neon production.
+3. Extract route, service and validation modules as the application grows.
+4. Follow `docs/DEPLOYMENT.md` only when ready to create the fictional public demo.

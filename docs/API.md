@@ -4,6 +4,8 @@
 
 Administrators can create local test users with `POST /api/admin/customers`, create their accounts with `POST /api/admin/accounts`, and control account status, balance, and transfer availability with `PATCH /api/admin/accounts/:id`.
 
+The browser UI now uses these protected routes for customer Profile/security and the private `/admin` Customers, Accounts, Audit log, and administrator Profile pages. None of these endpoints accept or store session, account, balance, transfer, or administrator data in browser localStorage.
+
 ## Added in 0.2.x (all JSON, session cookie required, authorization enforced server-side)
 
 Customer: `GET/PATCH /api/customer/profile` (name, phone, address, city, country), `POST /api/customer/security/password` (currentPassword, newPassword; signs out other devices), `POST /api/customer/security/sign-out-others`. Suspended customers are signed out on their next request.

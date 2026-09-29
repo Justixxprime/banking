@@ -24,6 +24,7 @@ const toTimestamp = value => {
 };
 
 const newAdminPassword = process.env.ADMIN_PASSWORD && process.env.ADMIN_PASSWORD.length >= 10 ? process.env.ADMIN_PASSWORD : null;
+if (!dryRun && process.env.NODE_ENV === 'production' && !newAdminPassword) fail('For a production copy, set ADMIN_PASSWORD to a new password with at least 10 characters.');
 const plans = [
   { table: 'users', identity: true, columns: ['id', 'name', 'email', 'password_hash'], map: r => [r.id, r.name, String(r.email).trim().toLowerCase(), r.password_hash] },
   { table: 'admin_users', identity: true, columns: ['id', 'name', 'email', 'password_hash'], map: r => [r.id, r.name, String(r.email).trim().toLowerCase(), newAdminPassword ? bcrypt.hashSync(newAdminPassword, 12) : r.password_hash] },

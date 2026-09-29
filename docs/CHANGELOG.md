@@ -20,3 +20,6 @@ Migrated persistence from Node's built-in SQLite to PostgreSQL (Neon) using `pg`
 
 ### 0.2.1 (server side of admin/profile features)
 Migration 2 (profile fields). New secured routes: customer profile and security (password change, sign out other devices), admin profile and password, admin customer read/edit/suspend/reset password, extended account edit, paginated and filterable audit log. `requireCustomer` now checks the customer is still ACTIVE on every request. Frontend pages for these routes are the next step.
+
+### 0.2.2 (frontend, production guard, and test baseline)
+Added the customer Profile/security page and private administrator Customers, Accounts, Audit log, and profile pages. Administrator demo credentials only pre-fill on localhost. Production rejects demo seeding and a missing/short administrator password. Added `node --test` smoke coverage for `/healthz`, no public admin link, and the production demo-seed guard. Added beginner deployment documentation for Neon production and Render.

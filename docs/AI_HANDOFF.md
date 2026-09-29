@@ -22,3 +22,9 @@ Exact next tasks: run the migration against the dev branch and test locally on W
 
 ### Status after 0.2.1
 Done and verified: Postgres migration copied into the Neon dev branch (counts and totals matched); migration 2 and the session/audit SQL were tested on Postgres 18 with rolled-back transactions. Server routes for admin customers/accounts/audit/profile and customer profile/security exist but are NOT yet used by the frontend. Not yet tested by a human in a browser. Remaining: frontend pages (public/app-v2.js, public/desktop.css: admin Customers, Accounts, Audit log, admin profile; customer Profile), remove pre-filled admin credentials for production, automated tests, DEPLOYMENT.md, Render + Neon production setup.
+
+### Status after 0.2.2
+
+Completed: customer Profile/security and the private administrator Customers, Accounts, Audit log, and profile views are wired to the secured APIs. Production startup now rejects `SEED_DEMO_DATA=true` and requires `ADMIN_EMAIL` plus a 10+ character `ADMIN_PASSWORD`; the admin form only pre-fills the demo credentials on localhost. `node --test` has smoke coverage for `/healthz`, the absent public admin link, and the production demo-seed guard. `docs/DEPLOYMENT.md` contains beginner Windows deployment steps.
+
+Next: manually exercise every new UI form in the browser, then consider deeper API integration tests against an explicitly configured disposable test database. Do not point tests at Neon production.

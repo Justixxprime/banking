@@ -15,6 +15,14 @@ if (isProduction && (!sessionSecret || sessionSecret.length < 32 || sessionSecre
   console.error('SESSION_SECRET must be set to a random value of at least 32 characters when NODE_ENV=production.');
   process.exit(1);
 }
+if (isProduction && process.env.SEED_DEMO_DATA !== 'false') {
+  console.error('SEED_DEMO_DATA must be false when NODE_ENV=production.');
+  process.exit(1);
+}
+if (isProduction && (!process.env.ADMIN_EMAIL || !process.env.ADMIN_PASSWORD || process.env.ADMIN_PASSWORD.length < 10)) {
+  console.error('ADMIN_EMAIL and a 10+ character ADMIN_PASSWORD must be set when NODE_ENV=production.');
+  process.exit(1);
+}
 
 class HttpError extends Error { constructor(status, message) { super(message); this.status = status; } }
 const wrap = handler => (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
