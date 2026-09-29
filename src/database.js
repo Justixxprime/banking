@@ -1,13 +1,172 @@
-const { DatabaseSync } = require('node:sqlite');
-const fs = require('fs');
-const path = require('path');
+// PostgreSQL access for Aurum Sim (Neon locally and online).
+// Everything in here is fictional data only.
+require('dotenv').config();
+const { Pool, types } = require('pg');
 const bcrypt = require('bcryptjs');
-const dataDirectory = path.join(__dirname, '../data');
-fs.mkdirSync(dataDirectory, { recursive: true });
-// Node 24 includes SQLite, so this project does not depend on a native addon.
-// That keeps setup reliable on Windows machines where install scripts are blocked.
-const db = new DatabaseSync(path.join(dataDirectory, 'aurum-sim.db'));
-function initializeDatabase() { db.exec(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL); CREATE TABLE IF NOT EXISTS admin_users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL); CREATE TABLE IF NOT EXISTS accounts (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, name TEXT NOT NULL, account_type TEXT NOT NULL, account_number TEXT UNIQUE NOT NULL, balance REAL NOT NULL, available_balance REAL NOT NULL, status TEXT NOT NULL DEFAULT 'ACTIVE', transfers_enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP); CREATE TABLE IF NOT EXISTS transactions (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, account_id INTEGER NOT NULL, reference TEXT UNIQUE NOT NULL, recipient_name TEXT, recipient_account TEXT, recipient_bank TEXT, amount REAL NOT NULL, description TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP); CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP); CREATE TABLE IF NOT EXISTS system_settings (setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS audit_logs (id INTEGER PRIMARY KEY, admin_id INTEGER, action TEXT NOT NULL, detail TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP); CREATE TABLE IF NOT EXISTS app_metadata (meta_key TEXT PRIMARY KEY, meta_value TEXT NOT NULL);`); }
-function seedDatabase() { if (db.prepare('SELECT COUNT(*) AS count FROM users').get().count) return; const user = db.prepare('INSERT INTO users (name,email,password_hash) VALUES (?,?,?)').run('Amara Okafor','amara@aurumsim.test',bcrypt.hashSync('demo1234', 12)); db.prepare('INSERT INTO admin_users (name,email,password_hash) VALUES (?,?,?)').run('Aurum Administrator','admin@aurumsim.test',bcrypt.hashSync('admin1234', 12)); const create = db.prepare('INSERT INTO accounts (user_id,name,account_type,account_number,balance,available_balance) VALUES (?,?,?,?,?,?)'); create.run(user.lastInsertRowid,'Everyday Account','CURRENT','2098746310',8500,8500); create.run(user.lastInsertRowid,'Growth Savings','SAVINGS','2098746311',24000,24000); create.run(user.lastInsertRowid,'Studio Business','BUSINESS','2098746312',57000,57000); db.prepare('INSERT INTO transactions (user_id,account_id,reference,recipient_name,recipient_account,recipient_bank,amount,description,status) VALUES (?,?,?,?,?,?,?,?,?)').run(user.lastInsertRowid,1,'AUR-START01','Nova Studio','0112345678','Aurum Sim',1250,'Design retainer','COMPLETED'); db.prepare('INSERT INTO notifications (user_id,title,body) VALUES (?,?,?)').run(user.lastInsertRowid,'Welcome to Aurum','Your account overview is ready.'); db.prepare('INSERT INTO system_settings VALUES (?,?)').run('transfers_enabled','true'); db.prepare('INSERT INTO system_settings VALUES (?,?)').run('default_transaction_result','COMPLETED'); }
-function migrateToUsd() { if (db.prepare("SELECT 1 FROM app_metadata WHERE meta_key = 'usd_migration_v1'").get()) return; db.exec('UPDATE accounts SET balance = balance / 100, available_balance = available_balance / 100; UPDATE transactions SET amount = amount / 100;'); db.prepare('INSERT INTO app_metadata (meta_key, meta_value) VALUES (?, ?)').run('usd_migration_v1', new Date().toISOString()); }
-module.exports = { db, initializeDatabase, seedDatabase, migrateToUsd };
+
+if (!process.env.DATABASE_URL) {
+  console.error('\nDATABASE_URL is missing.\nCopy .env.example to .env, then paste your Neon connection string into the DATABASE_URL line.\n');
+  process.exit(1);
+}
+
+// Postgres sends NUMERIC (money) and COUNT(*) as text. Convert them to real numbers
+// so the API responses look exactly like they did with SQLite.
+types.setTypeParser(1700, value => parseFloat(value)); // NUMERIC
+types.setTypeParser(20, value => parseInt(value, 10)); // BIGINT (COUNT)
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  max: 5,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 20000 // a sleeping Neon database needs a moment to wake up
+});
+pool.on('error', error => console.error('Database connection problem:', error.message));
+
+const query = (text, params) => pool.query(text, params);
+
+async function withTransaction(work) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await work(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    try { await client.query('ROLLBACK'); } catch { /* connection already gone */ }
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+// Works with the pool or with a client inside a transaction.
+const audit = (runner, adminId, action, detail) =>
+  runner.query('INSERT INTO audit_logs (admin_id, action, detail) VALUES ($1, $2, $3)', [adminId, action, detail]);
+
+// Numbered schema changes. Never edit an old entry after it has been applied; add a new one.
+const migrations = [
+  {
+    id: 1,
+    name: 'base schema',
+    sql: `
+      CREATE TABLE users (
+        id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+        name TEXT NOT NULL,
+        email TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'SUSPENDED')),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE TABLE admin_users (
+        id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+        name TEXT NOT NULL,
+        email TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE TABLE accounts (
+        id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id),
+        name TEXT NOT NULL,
+        account_type TEXT NOT NULL CHECK (account_type IN ('CURRENT', 'SAVINGS', 'BUSINESS')),
+        account_number TEXT NOT NULL UNIQUE,
+        balance NUMERIC(14,2) NOT NULL CHECK (balance >= 0),
+        available_balance NUMERIC(14,2) NOT NULL CHECK (available_balance >= 0),
+        status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'SUSPENDED')),
+        transfers_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX accounts_user_id_idx ON accounts (user_id);
+      CREATE TABLE transactions (
+        id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id),
+        account_id INTEGER NOT NULL REFERENCES accounts(id),
+        reference TEXT NOT NULL UNIQUE,
+        recipient_name TEXT,
+        recipient_account TEXT,
+        recipient_bank TEXT,
+        amount NUMERIC(14,2) NOT NULL CHECK (amount > 0),
+        description TEXT,
+        status TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX transactions_user_created_idx ON transactions (user_id, created_at DESC);
+      CREATE INDEX transactions_account_idx ON transactions (account_id);
+      CREATE TABLE notifications (
+        id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id),
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX notifications_user_created_idx ON notifications (user_id, created_at DESC);
+      CREATE TABLE system_settings (
+        setting_key TEXT PRIMARY KEY,
+        setting_value TEXT NOT NULL
+      );
+      CREATE TABLE audit_logs (
+        id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+        admin_id INTEGER REFERENCES admin_users(id),
+        action TEXT NOT NULL,
+        detail TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX audit_logs_created_idx ON audit_logs (created_at DESC);
+      CREATE TABLE "session" (
+        "sid" VARCHAR NOT NULL COLLATE "default",
+        "sess" JSON NOT NULL,
+        "expire" TIMESTAMP(6) NOT NULL,
+        CONSTRAINT "session_pkey" PRIMARY KEY ("sid")
+      );
+      CREATE INDEX "IDX_session_expire" ON "session" ("expire");
+    `
+  }
+];
+
+async function initializeDatabase() {
+  await withTransaction(async client => {
+    // The lock stops two app copies from changing the schema at the same moment.
+    await client.query('SELECT pg_advisory_xact_lock(727274)');
+    await client.query('CREATE TABLE IF NOT EXISTS schema_migrations (id INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())');
+    const applied = new Set((await client.query('SELECT id FROM schema_migrations')).rows.map(row => row.id));
+    for (const migration of migrations) {
+      if (applied.has(migration.id)) continue;
+      await client.query(migration.sql);
+      await client.query('INSERT INTO schema_migrations (id, name) VALUES ($1, $2)', [migration.id, migration.name]);
+      console.log(`Database migration ${migration.id} applied: ${migration.name}`);
+    }
+    await client.query(`INSERT INTO system_settings (setting_key, setting_value) VALUES ('transfers_enabled', 'true'), ('default_transaction_result', 'COMPLETED') ON CONFLICT (setting_key) DO NOTHING`);
+  });
+}
+
+async function seedDatabase() {
+  const { rows: [counts] } = await query('SELECT (SELECT COUNT(*) FROM users) AS users, (SELECT COUNT(*) FROM admin_users) AS admins');
+  const demo = process.env.SEED_DEMO_DATA === 'true';
+
+  if (demo && counts.users === 0 && counts.admins === 0) {
+    await withTransaction(async client => {
+      const customer = (await client.query('INSERT INTO users (name, email, password_hash) VALUES ($1, $2, $3) RETURNING id', ['Amara Okafor', 'amara@aurumsim.test', bcrypt.hashSync('demo1234', 12)])).rows[0];
+      await client.query('INSERT INTO admin_users (name, email, password_hash) VALUES ($1, $2, $3)', ['Aurum Administrator', 'admin@aurumsim.test', bcrypt.hashSync('admin1234', 12)]);
+      const accountSql = 'INSERT INTO accounts (user_id, name, account_type, account_number, balance, available_balance) VALUES ($1, $2, $3, $4, $5, $5) RETURNING id';
+      const everyday = (await client.query(accountSql, [customer.id, 'Everyday Account', 'CURRENT', '2098746310', 8500])).rows[0];
+      await client.query(accountSql, [customer.id, 'Growth Savings', 'SAVINGS', '2098746311', 24000]);
+      await client.query(accountSql, [customer.id, 'Studio Business', 'BUSINESS', '2098746312', 57000]);
+      await client.query('INSERT INTO transactions (user_id, account_id, reference, recipient_name, recipient_account, recipient_bank, amount, description, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)', [customer.id, everyday.id, 'AUR-START01', 'Nova Studio', '0112345678', 'Aurum Sim', 1250, 'Design retainer', 'COMPLETED']);
+      await client.query('INSERT INTO notifications (user_id, title, body) VALUES ($1, $2, $3)', [customer.id, 'Welcome to Aurum', 'Your account overview is ready.']);
+    });
+    console.log('Demo customer and administrator created (fictional data).');
+    return;
+  }
+
+  if (counts.admins === 0) {
+    const { ADMIN_NAME, ADMIN_EMAIL, ADMIN_PASSWORD } = process.env;
+    if (ADMIN_EMAIL && ADMIN_PASSWORD && ADMIN_PASSWORD.length >= 10) {
+      await query('INSERT INTO admin_users (name, email, password_hash) VALUES ($1, $2, $3)', [ADMIN_NAME || 'Administrator', ADMIN_EMAIL.trim().toLowerCase(), bcrypt.hashSync(ADMIN_PASSWORD, 12)]);
+      console.log('Administrator created from ADMIN_EMAIL / ADMIN_PASSWORD.');
+    } else {
+      console.warn('No administrator exists. Set ADMIN_EMAIL and ADMIN_PASSWORD (10+ characters) or SEED_DEMO_DATA=true.');
+    }
+  }
+}
+
+module.exports = { pool, query, withTransaction, audit, initializeDatabase, seedDatabase };

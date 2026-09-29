@@ -13,3 +13,9 @@ Environment: `PORT` and `SESSION_SECRET`. Start with `npm install` then `npm sta
 Latest session added a private administrator route at `/admin`. There is intentionally no public admin link. The route has its own sign-in screen and server-side administrator session checks. SQLite remains the free local database at `data/aurum-sim.db`; this application does not use browser localStorage. The active customer and administrator script is `public/app-v2.js`. Do not connect this project to real funds, payment networks, or external banking infrastructure, and do not remove server-side authorization checks without permission.
 
 Exact next task: add administrator editing for a customer's name/email and controlled account balance editing, then write automated API tests.
+
+## Update: PostgreSQL migration (0.2.0, in progress)
+
+The database layer now uses PostgreSQL (Neon; local development uses the Neon `dev` branch, production uses the `production` branch). `src/database.js` exports `query`, `withTransaction`, `audit`, `initializeDatabase`, `seedDatabase`; all routes in `src/server.js` are async. Old SQLite-only statements in the sections above are historical. Deployment target: Render (Node/Express serving the frontend) plus Neon. Keep the database free of real financial data and keep `/healthz` database-free so free-tier compute can sleep.
+
+Exact next tasks: run the migration against the dev branch and test locally on Windows; then admin Customers/Accounts/Audit log pages and forms, admin name editing, customer Profile page, suspended-user session enforcement in `requireCustomer`, remove pre-filled admin credentials online, tests, `docs/DEPLOYMENT.md`.
