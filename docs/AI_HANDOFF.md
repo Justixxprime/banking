@@ -32,3 +32,11 @@ Next: manually exercise every new UI form in the browser, then consider deeper A
 ### Status after 0.2.3
 
 Added a private Administrators page in `/admin`. An administrator can create additional administrator accounts and edit another administrator's name, email, or reset password through secured server routes. The page also displays the visitor's live local device time. Modal dialogs now scroll within short browser windows. Render deployment requires setting `SEED_DEMO_DATA=false` in the **Render dashboard**; local `.env` can remain `true` for the demo database.
+
+### Status after 0.2.4
+
+Added the private administrator Transaction history page. Administrators can filter, create, and correct fictional transaction records; they may change amount, status, recipient information, and date/time. Each change is server-authorized, stored in Postgres, balance-safe inside a locked transaction, and written to the audit log. Private, printable receipts show the saved record. Dashboard footers now clearly state that Aurum Sim is fictional, is not a bank, has no real money, and is not FDIC insured.
+
+### Status after 0.2.5
+
+Added protected customer Notifications and Statements pages. Notifications are paginated from the existing Postgres table. Customers can generate a private, printable statement for only one of their own fictional accounts and a date range of up to 366 days. The generated statement is a view of existing records, not a new stored financial document. `docs/CLAUDE_CODE_HANDOFF.md` explains how to continue safely with Claude Code on Windows after a session ends.

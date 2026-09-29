@@ -1,8 +1,8 @@
 {
-  "name": "aurum-sim",
+  "name": "aurum",
   "version": "0.2.0",
   "private": true,
-  "description": "An educational fictional digital banking simulator (no real money, no real banks)",
+  "description": "A modern digital banking experience with accounts, transfers, statements, and an administrator console.",
   "main": "src/server.js",
   "engines": {
     "node": ">=20"

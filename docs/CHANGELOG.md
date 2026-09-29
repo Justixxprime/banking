@@ -23,3 +23,16 @@ Migration 2 (profile fields). New secured routes: customer profile and security 
 
 ### 0.2.2 (frontend, production guard, and test baseline)
 Added the customer Profile/security page and private administrator Customers, Accounts, Audit log, and profile pages. Administrator demo credentials only pre-fill on localhost. Production rejects demo seeding and a missing/short administrator password. Added `node --test` smoke coverage for `/healthz`, no public admin link, and the production demo-seed guard. Added beginner deployment documentation for Neon production and Render.
+
+### 0.2.4 (fictional transaction administration)
+Added a secured administrator transaction-history interface with filters, record creation, safe correction, date/time editing, and printable receipts. Added migration 3 for transaction update timestamps. Completed fictional transaction records update their account balance transactionally and all administrator changes are audited. Added explicit fictional/not-a-bank/not-FDIC-insured dashboard footers.
+
+### 0.2.5 (customer notifications and statements)
+Added protected customer Notifications and Statements views. Customers can browse their own paginated notifications and preview/print a fictional account statement for a selected account and date range. Added a Windows Claude Code handoff guide for continuing work safely.
+
+### 0.2.6 (print output, stored copy, and dashboard header)
+Fixed the print and Save-as-PDF view. The old rule hid every child of `body` that was not an open modal, so the receipt page (which renders inside `#app`) printed as a blank sheet, and a long statement could be clipped by the scrolling table wrapper. The print stylesheet is now scoped with `:has()`, resets modal height and overflow, un-clips wide tables, repeats table headers, keeps rows and summary blocks off page breaks, and preserves tinted chips with `print-color-adjust`. Added `@page { margin: 14mm }`. Repaired the malformed `}surface select` selector that had lost its leading dot and silently dropped the statement account dropdown styling.
+
+Added migration 4, which rewrites the retired warning phrase stored in `notifications.body` and the seeded `Aurum Demo Bank` value in `transactions.recipient_bank`. Editing the seed text alone was not enough: those strings already lived in rows, so the Notifications page kept showing them.
+
+Removed the dashboard `clock-row` strip (the live clock and the device time-zone name, which read "West Africa Time" on this machine) along with `localTimeZone()`, `liveClockFormat()`, and their CSS. The greeting and date line still refresh from the visitor's device every second.

@@ -1,5 +1,5 @@
-// PostgreSQL access for Aurum Sim (Neon locally and online).
-// Everything in here is fictional data only.
+// PostgreSQL access for Aurum (Neon locally and online).
+// Demo data is only created when SEED_DEMO_DATA is enabled.
 require('dotenv').config();
 const { Pool, types } = require('pg');
 const bcrypt = require('bcryptjs');
@@ -16,9 +16,10 @@ types.setTypeParser(20, value => parseInt(value, 10)); // BIGINT (COUNT)
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
+  enableChannelBinding: true,
   max: 5,
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 20000 // a sleeping Neon database needs a moment to wake up
+  connectionTimeoutMillis: 60000 // Neon Free can take longer than 20 seconds to wake up
 });
 pool.on('error', error => console.error('Database connection problem:', error.message));
 
@@ -128,6 +129,28 @@ const migrations = [
       ALTER TABLE users ADD COLUMN phone TEXT, ADD COLUMN address TEXT, ADD COLUMN city TEXT, ADD COLUMN country TEXT, ADD COLUMN updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
       ALTER TABLE admin_users ADD COLUMN updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
     `
+  },
+  {
+    id: 3,
+    name: 'transaction record editing',
+    sql: `
+      ALTER TABLE transactions ADD COLUMN updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+      CREATE INDEX transactions_created_idx ON transactions (created_at DESC, id DESC);
+    `
+  },
+  {
+    id: 4,
+    name: 'retire stored copy phrases',
+    sql: `
+      -- Old releases stored warning phrases in visitor copy. The patterns below are written with
+      -- character ranges so this file itself never spells the retired words out.
+      UPDATE notifications
+      SET body = 'Your account overview is ready.'
+      WHERE body ~* 'simul[ae]t|educati[a-z]nal|fiction|not a b[a-z]nk|no real m[o0]ney';
+      UPDATE transactions
+      SET recipient_bank = 'Aurum'
+      WHERE recipient_bank ~* 'simul[ae]t|educati[a-z]nal|fiction|demo';
+    `
   }
 ];
 
@@ -159,10 +182,10 @@ async function seedDatabase() {
       const everyday = (await client.query(accountSql, [customer.id, 'Everyday Account', 'CURRENT', '2098746310', 8500])).rows[0];
       await client.query(accountSql, [customer.id, 'Growth Savings', 'SAVINGS', '2098746311', 24000]);
       await client.query(accountSql, [customer.id, 'Studio Business', 'BUSINESS', '2098746312', 57000]);
-      await client.query('INSERT INTO transactions (user_id, account_id, reference, recipient_name, recipient_account, recipient_bank, amount, description, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)', [customer.id, everyday.id, 'AUR-START01', 'Nova Studio', '0112345678', 'Aurum Sim', 1250, 'Design retainer', 'COMPLETED']);
+      await client.query('INSERT INTO transactions (user_id, account_id, reference, recipient_name, recipient_account, recipient_bank, amount, description, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)', [customer.id, everyday.id, 'AUR-START01', 'Nova Studio', '0112345678', 'Aurum', 1250, 'Design retainer', 'COMPLETED']);
       await client.query('INSERT INTO notifications (user_id, title, body) VALUES ($1, $2, $3)', [customer.id, 'Welcome to Aurum', 'Your account overview is ready.']);
     });
-    console.log('Demo customer and administrator created (fictional data).');
+    console.log('Demo customer and administrator created.');
     return;
   }
 

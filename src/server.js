@@ -46,8 +46,10 @@ app.use(session({
   saveUninitialized: false,
   cookie: { httpOnly: true, sameSite: 'lax', secure: isProduction, maxAge: 7 * 24 * 60 * 60 * 1000 }
 }));
-app.use(express.static(path.join(__dirname, '../public')));
-app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, '../public/index.html')));
+// The page and the bundle must revalidate on every load, so a browser can never keep stale markup
+// or stale front-end code after a deploy. Long-lived caching stays available for fingerprinted assets.
+app.use(express.static(path.join(__dirname, '../public'), { setHeaders: response => response.setHeader('Cache-Control', 'no-cache') }));
+app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, '../public/index.html'), { headers: { 'Cache-Control': 'no-cache' } }));
 // Health check for the host. It must NOT touch the database, or it would keep the free database awake all day.
 app.get('/healthz', (req, res) => res.json({ ok: true }));
 
@@ -131,6 +133,33 @@ app.get('/api/customer/dashboard', requireCustomer, wrap(async (req, res) => {
   res.json({ accounts: accounts.rows, transactions: transactions.rows, notifications: notifications.rows });
 }));
 
+app.get('/api/customer/notifications', requireCustomer, wrap(async (req, res) => {
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
+  const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+  const [rows, total] = await Promise.all([
+    query('SELECT id, title, body, created_at FROM notifications WHERE user_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2 OFFSET $3', [req.session.user.id, limit, offset]),
+    query('SELECT COUNT(*) AS count FROM notifications WHERE user_id = $1', [req.session.user.id])
+  ]);
+  res.json({ notifications: rows.rows, total: total.rows[0].count, limit, offset });
+}));
+
+app.get('/api/customer/statements', requireCustomer, wrap(async (req, res) => {
+  const accountId = toId(req.query.accountId);
+  if (!accountId) throw new HttpError(400, 'Choose one of your accounts.');
+  const parseDate = value => {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+    const date = new Date(`${value}T00:00:00.000Z`);
+    return Number.isNaN(date.getTime()) ? null : date;
+  };
+  const to = req.query.to ? parseDate(req.query.to) : new Date();
+  const from = req.query.from ? parseDate(req.query.from) : new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000);
+  if (!from || !to || from > to || to.getTime() - from.getTime() > 366 * 24 * 60 * 60 * 1000) throw new HttpError(400, 'Choose a valid statement range of up to 366 days.');
+  const { rows: [account] } = await query('SELECT id, name, account_type, account_number, balance, available_balance FROM accounts WHERE id = $1 AND user_id = $2', [accountId, req.session.user.id]);
+  if (!account) throw new HttpError(404, 'Account not found.');
+  const transactions = await query('SELECT id, reference, recipient_name, recipient_account, recipient_bank, amount, description, status, created_at FROM transactions WHERE account_id = $1 AND user_id = $2 AND created_at >= $3 AND created_at < $4 ORDER BY created_at DESC, id DESC', [accountId, req.session.user.id, from.toISOString(), new Date(to.getTime() + 24 * 60 * 60 * 1000).toISOString()]);
+  res.json({ account, transactions: transactions.rows, period: { from: from.toISOString(), to: to.toISOString() }, generatedAt: new Date().toISOString() });
+}));
+
 app.post('/api/customer/transfers', requireCustomer, wrap(async (req, res) => {
   const { accountId, recipientName, recipientAccount, recipientBank, amount, description } = req.body || {};
   const text = value => (typeof value === 'string' ? value.trim() : '');
@@ -146,18 +175,18 @@ app.post('/api/customer/transfers', requireCustomer, wrap(async (req, res) => {
     if (!source) throw new HttpError(400, 'Please provide complete valid transfer information.');
     const settings = Object.fromEntries((await client.query('SELECT setting_key, setting_value FROM system_settings')).rows.map(row => [row.setting_key, row.setting_value]));
     if (source.status !== 'ACTIVE') throw new HttpError(403, 'This account is suspended.');
-    if (settings.transfers_enabled !== 'true' || !source.transfers_enabled) throw new HttpError(403, 'Transfers are currently disabled in this simulation.');
+    if (settings.transfers_enabled !== 'true' || !source.transfers_enabled) throw new HttpError(403, 'Transfers are temporarily unavailable.');
     if (numericAmount > source.available_balance) throw new HttpError(400, 'Your available balance is not enough for this transfer.');
     const outcome = settings.default_transaction_result || 'COMPLETED';
     const reference = `AUR-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
     const { rows: [tx] } = await client.query(
       'INSERT INTO transactions (user_id, account_id, reference, recipient_name, recipient_account, recipient_bank, amount, description, status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id',
-      [uid, source.id, reference, text(recipientName), text(recipientAccount), text(recipientBank), numericAmount, text(description) || 'Simulated transfer', outcome]);
+      [uid, source.id, reference, text(recipientName), text(recipientAccount), text(recipientBank), numericAmount, text(description) || 'Outgoing transfer', outcome]);
     if (outcome === 'COMPLETED') await client.query('UPDATE accounts SET balance = balance - $1, available_balance = available_balance - $1 WHERE id = $2', [numericAmount, source.id]);
-    await audit(client, null, 'SIMULATED_TRANSFER', reference);
+    await audit(client, null, 'TRANSFER_CREATED', reference);
     return { id: tx.id, reference, status: outcome };
   });
-  res.status(201).json({ ...result, message: result.status === 'COMPLETED' ? 'Your simulated transfer was successful.' : `Your simulated transfer is ${result.status.toLowerCase()}.` });
+  res.status(201).json({ ...result, message: result.status === 'COMPLETED' ? 'Your transfer was successful.' : `Your transfer is ${result.status.toLowerCase()}.` });
 }));
 
 app.get('/api/customer/transactions/:id/receipt', requireCustomer, wrap(async (req, res) => {
@@ -165,6 +194,105 @@ app.get('/api/customer/transactions/:id/receipt', requireCustomer, wrap(async (r
   const { rows: [transaction] } = id ? await query('SELECT t.*, a.name AS sender_account, a.account_number FROM transactions t JOIN accounts a ON a.id = t.account_id WHERE t.id = $1 AND t.user_id = $2', [id, req.session.user.id]) : { rows: [] };
   if (!transaction) throw new HttpError(404, 'Receipt not found.');
   res.json({ transaction, customer: req.session.user });
+}));
+
+const TRANSACTION_STATUSES = ['COMPLETED', 'FAILED', 'PENDING', 'PROCESSING'];
+const transactionText = (value, max) => (typeof value === 'string' && value.trim().length <= max ? value.trim() : '');
+const transactionTimestamp = value => {
+  if (typeof value !== 'string' || !value) return null;
+  const timestamp = new Date(value);
+  return Number.isNaN(timestamp.getTime()) ? null : timestamp.toISOString();
+};
+function adminTransactionInput(body, { requireAccount = true, requireCreatedAt = true } = {}) {
+  const accountId = toId(body?.accountId);
+  const amount = roundMoney(body?.amount);
+  const recipientName = transactionText(body?.recipientName, 80);
+  const recipientAccount = transactionText(body?.recipientAccount, 40);
+  const recipientBank = transactionText(body?.recipientBank, 80);
+  const description = transactionText(body?.description, 140);
+  const status = body?.status;
+  const createdAt = transactionTimestamp(body?.createdAt);
+  if ((requireAccount && !accountId) || !Number.isFinite(amount) || amount <= 0 || amount > MAX_MONEY || !recipientName || !recipientAccount || !recipientBank || !description || !TRANSACTION_STATUSES.includes(status) || (requireCreatedAt && !createdAt)) {
+    throw new HttpError(400, 'Enter an account, recipient details, amount, status, description, and a valid date and time.');
+  }
+  return { accountId, amount, recipientName, recipientAccount, recipientBank, description, status, createdAt };
+}
+
+async function applyTransactionRecord(client, previous, next) {
+  const affectedIds = [...new Set([previous?.account_id, next.accountId].filter(Boolean))].sort((a, b) => a - b);
+  const { rows: accounts } = await client.query(
+    'SELECT id, user_id, balance, available_balance FROM accounts WHERE id = ANY($1::int[]) ORDER BY id FOR UPDATE',
+    [affectedIds]
+  );
+  const byId = new Map(accounts.map(account => [account.id, account]));
+  const source = byId.get(next.accountId);
+  if (!source) throw new HttpError(404, 'Account not found.');
+  const changes = new Map();
+  if (previous?.status === 'COMPLETED') changes.set(previous.account_id, (changes.get(previous.account_id) || 0) + Number(previous.amount));
+  if (next.status === 'COMPLETED') changes.set(next.accountId, (changes.get(next.accountId) || 0) - next.amount);
+  for (const [accountId, adjustment] of changes) {
+    const account = byId.get(accountId);
+    if (!account || Number(account.balance) + adjustment < 0 || Number(account.available_balance) + adjustment < 0) {
+      throw new HttpError(400, 'This completed record would make the account balance negative.');
+    }
+  }
+  for (const [accountId, adjustment] of changes) {
+    if (adjustment) await client.query('UPDATE accounts SET balance = balance + $1, available_balance = available_balance + $1 WHERE id = $2', [adjustment, accountId]);
+  }
+  return source;
+}
+
+app.get('/api/admin/transactions', requireAdmin, wrap(async (req, res) => {
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 25, 1), 100);
+  const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+  const status = typeof req.query.status === 'string' && req.query.status ? req.query.status : null;
+  if (status && !TRANSACTION_STATUSES.includes(status)) throw new HttpError(400, 'Unsupported transaction status filter.');
+  const customerId = req.query.customerId ? toId(req.query.customerId) : null;
+  if (req.query.customerId && !customerId) throw new HttpError(400, 'Customer filter is invalid.');
+  const where = 'WHERE ($1::text IS NULL OR t.status = $1) AND ($2::int IS NULL OR t.user_id = $2)';
+  const [rows, total] = await Promise.all([
+    query(`SELECT t.*, u.name AS customer_name, u.email AS customer_email, a.name AS sender_account, a.account_number FROM transactions t JOIN users u ON u.id = t.user_id JOIN accounts a ON a.id = t.account_id ${where} ORDER BY t.created_at DESC, t.id DESC LIMIT $3 OFFSET $4`, [status, customerId, limit, offset]),
+    query(`SELECT COUNT(*) AS count FROM transactions t ${where}`, [status, customerId])
+  ]);
+  res.json({ transactions: rows.rows, total: total.rows[0].count, limit, offset });
+}));
+
+app.post('/api/admin/transactions', requireAdmin, wrap(async (req, res) => {
+  const next = adminTransactionInput(req.body);
+  const created = await withTransaction(async client => {
+    const source = await applyTransactionRecord(client, null, next);
+    const reference = `AUR-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+    const { rows: [record] } = await client.query(
+      'INSERT INTO transactions (user_id, account_id, reference, recipient_name, recipient_account, recipient_bank, amount, description, status, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now()) RETURNING id, reference',
+      [source.user_id, next.accountId, reference, next.recipientName, next.recipientAccount, next.recipientBank, next.amount, next.description, next.status, next.createdAt]
+    );
+    await client.query('INSERT INTO notifications (user_id, title, body) VALUES ($1, $2, $3)', [source.user_id, 'Transaction record added', `A ${next.status.toLowerCase()} transaction was added to your activity.`]);
+    await audit(client, req.session.user.id, 'ADMIN_TRANSACTION_CREATED', `transaction_id=${record.id}; account_id=${next.accountId}; amount=${next.amount.toFixed(2)}; status=${next.status}`);
+    return record;
+  });
+  res.status(201).json(created);
+}));
+
+app.patch('/api/admin/transactions/:id', requireAdmin, wrap(async (req, res) => {
+  const id = toId(req.params.id);
+  if (!id) throw new HttpError(404, 'Transaction not found.');
+  const next = adminTransactionInput(req.body);
+  await withTransaction(async client => {
+    const { rows: [previous] } = await client.query('SELECT * FROM transactions WHERE id = $1 FOR UPDATE', [id]);
+    if (!previous) throw new HttpError(404, 'Transaction not found.');
+    const source = await applyTransactionRecord(client, previous, next);
+    await client.query('UPDATE transactions SET user_id = $1, account_id = $2, recipient_name = $3, recipient_account = $4, recipient_bank = $5, amount = $6, description = $7, status = $8, created_at = $9, updated_at = now() WHERE id = $10', [source.user_id, next.accountId, next.recipientName, next.recipientAccount, next.recipientBank, next.amount, next.description, next.status, next.createdAt, id]);
+    await client.query('INSERT INTO notifications (user_id, title, body) VALUES ($1, $2, $3)', [source.user_id, 'Transaction record updated', `Transaction record (${previous.reference}) was updated by an administrator.`]);
+    await audit(client, req.session.user.id, 'ADMIN_TRANSACTION_UPDATED', `transaction_id=${id}; account_id=${next.accountId}; amount=${next.amount.toFixed(2)}; status=${next.status}; date_time_changed`);
+  });
+  res.json({ ok: true });
+}));
+
+app.get('/api/admin/transactions/:id/receipt', requireAdmin, wrap(async (req, res) => {
+  const id = toId(req.params.id);
+  const { rows: [transaction] } = id ? await query('SELECT t.*, a.name AS sender_account, a.account_number, u.name AS customer_name, u.email AS customer_email FROM transactions t JOIN accounts a ON a.id = t.account_id JOIN users u ON u.id = t.user_id WHERE t.id = $1', [id]) : { rows: [] };
+  if (!transaction) throw new HttpError(404, 'Receipt not found.');
+  res.json({ transaction, customer: { id: transaction.user_id, name: transaction.customer_name, email: transaction.customer_email } });
 }));
 
 app.get('/api/admin/overview', requireAdmin, wrap(async (req, res) => {
@@ -182,7 +310,7 @@ app.get('/api/admin/overview', requireAdmin, wrap(async (req, res) => {
 app.patch('/api/admin/settings', requireAdmin, wrap(async (req, res) => {
   const { key, value } = req.body || {};
   const allowed = { transfers_enabled: ['true', 'false'], default_transaction_result: ['COMPLETED', 'FAILED', 'PENDING', 'PROCESSING'] };
-  if (!allowed[key]) throw new HttpError(400, 'Unknown simulation setting.');
+  if (!allowed[key]) throw new HttpError(400, 'Unknown system setting.');
   if (!allowed[key].includes(String(value))) throw new HttpError(400, 'Unsupported value for this setting.');
   await withTransaction(async client => {
     await client.query('UPDATE system_settings SET setting_value = $1 WHERE setting_key = $2', [String(value), key]);
@@ -363,12 +491,21 @@ async function start() {
   await removeExpiredSessions();
   setInterval(removeExpiredSessions, 6 * 60 * 60 * 1000).unref();
   const port = process.env.PORT || 3000;
-  return app.listen(port, () => console.log(`Aurum Sim is running on port ${port}${isProduction ? '' : ` - open http://localhost:${port}`}`));
+  return new Promise((resolve, reject) => {
+    const server = app.listen(port, () => {
+      console.log(`Aurum is running on port ${port}${isProduction ? '' : ` - open http://localhost:${port}`}`);
+      resolve(server);
+    });
+    server.once('error', error => {
+      if (error.code === 'EADDRINUSE') return reject(new Error(`Port ${port} is already in use. Stop the existing Node server first, then run npm start again.`));
+      reject(error);
+    });
+  });
 }
 
 if (require.main === module) {
   start().catch(error => {
-    console.error(`\nAurum Sim could not start: ${error.message}\nCheck that DATABASE_URL in your .env file is the full Neon connection string.\n`);
+    console.error(`\nAurum could not start: ${error.message}\nCheck that DATABASE_URL in your .env file is the full Neon connection string.\n`);
     process.exit(1);
   });
 }
