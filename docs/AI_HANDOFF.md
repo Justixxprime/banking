@@ -28,3 +28,7 @@ Done and verified: Postgres migration copied into the Neon dev branch (counts an
 Completed: customer Profile/security and the private administrator Customers, Accounts, Audit log, and profile views are wired to the secured APIs. Production startup now rejects `SEED_DEMO_DATA=true` and requires `ADMIN_EMAIL` plus a 10+ character `ADMIN_PASSWORD`; the admin form only pre-fills the demo credentials on localhost. `node --test` has smoke coverage for `/healthz`, the absent public admin link, and the production demo-seed guard. `docs/DEPLOYMENT.md` contains beginner Windows deployment steps.
 
 Next: manually exercise every new UI form in the browser, then consider deeper API integration tests against an explicitly configured disposable test database. Do not point tests at Neon production.
+
+### Status after 0.2.3
+
+Added a private Administrators page in `/admin`. An administrator can create additional administrator accounts and edit another administrator's name, email, or reset password through secured server routes. The page also displays the visitor's live local device time. Modal dialogs now scroll within short browser windows. Render deployment requires setting `SEED_DEMO_DATA=false` in the **Render dashboard**; local `.env` can remain `true` for the demo database.

@@ -168,14 +168,15 @@ app.get('/api/customer/transactions/:id/receipt', requireCustomer, wrap(async (r
 }));
 
 app.get('/api/admin/overview', requireAdmin, wrap(async (req, res) => {
-  const [customers, accounts, transactions, settings, logs] = await Promise.all([
+  const [customers, accounts, transactions, settings, logs, administrators] = await Promise.all([
     query('SELECT id, name, email, status FROM users ORDER BY id'),
     query('SELECT a.*, u.name AS customer_name FROM accounts a JOIN users u ON u.id = a.user_id ORDER BY a.id'),
     query('SELECT * FROM transactions ORDER BY created_at DESC, id DESC'),
     query('SELECT * FROM system_settings ORDER BY setting_key'),
-    query('SELECT * FROM audit_logs ORDER BY created_at DESC, id DESC LIMIT 12')
+    query('SELECT * FROM audit_logs ORDER BY created_at DESC, id DESC LIMIT 12'),
+    query('SELECT id, name, email, created_at, updated_at FROM admin_users ORDER BY id')
   ]);
-  res.json({ customers: customers.rows, accounts: accounts.rows, transactions: transactions.rows, settings: settings.rows, logs: logs.rows });
+  res.json({ customers: customers.rows, accounts: accounts.rows, transactions: transactions.rows, settings: settings.rows, logs: logs.rows, administrators: administrators.rows });
 }));
 
 app.patch('/api/admin/settings', requireAdmin, wrap(async (req, res) => {
@@ -271,6 +272,41 @@ app.post('/api/admin/security/password', requireAdmin, wrap(async (req, res) => 
   await endSessions('admin', req.session.user.id, req.sessionID);
   await audit(pool, req.session.user.id, 'ADMIN_PASSWORD_CHANGED', `admin_id=${req.session.user.id}`);
   res.json({ ok: true });
+}));
+
+app.post('/api/admin/administrators', requireAdmin, wrap(async (req, res) => {
+  const name = textField(req.body?.name, 80); const email = normalizeEmail(req.body?.email); const password = req.body?.password;
+  if (!name || !/^\S+@\S+\.\S+$/.test(email) || typeof password !== 'string' || password.length < 10 || password.length > 100) {
+    throw new HttpError(400, 'Enter a name, valid email, and a 10-100 character password.');
+  }
+  try {
+    const administrator = await withTransaction(async client => {
+      const { rows: [row] } = await client.query('INSERT INTO admin_users (name, email, password_hash) VALUES ($1, $2, $3) RETURNING id, name, email', [name, email, await bcrypt.hash(password, 12)]);
+      await audit(client, req.session.user.id, 'ADMINISTRATOR_CREATED', `administrator_id=${row.id}`);
+      return row;
+    });
+    res.status(201).json({ administrator });
+  } catch (error) { if (error.code === '23505') throw new HttpError(409, 'That email address is already used.'); throw error; }
+}));
+
+app.patch('/api/admin/administrators/:id', requireAdmin, wrap(async (req, res) => {
+  const id = toId(req.params.id); const body = req.body || {}; const sets = []; const values = []; const changed = [];
+  const add = (column, value) => { values.push(value); sets.push(`${column} = $${values.length}`); changed.push(column); };
+  if (body.name !== undefined) { const name = textField(body.name, 80); if (!name) throw new HttpError(400, 'Enter a valid name.'); add('name', name); }
+  if (body.email !== undefined) { const email = normalizeEmail(body.email); if (!/^\S+@\S+\.\S+$/.test(email)) throw new HttpError(400, 'Enter a valid email address.'); add('email', email); }
+  if (body.password !== undefined) { if (typeof body.password !== 'string' || body.password.length < 10 || body.password.length > 100) throw new HttpError(400, 'A reset password needs 10-100 characters.'); add('password_hash', await bcrypt.hash(body.password, 12)); changed[changed.length - 1] = 'password_reset'; }
+  if (!sets.length) throw new HttpError(400, 'Choose something to update.');
+  try {
+    await withTransaction(async client => {
+      values.push(id);
+      const result = id ? await client.query(`UPDATE admin_users SET ${sets.join(', ')}, updated_at = now() WHERE id = $${values.length}`, values) : { rowCount: 0 };
+      if (!result.rowCount) throw new HttpError(404, 'Administrator not found.');
+      await audit(client, req.session.user.id, 'ADMINISTRATOR_UPDATED', `administrator_id=${id}; ${changed.join(', ')}`);
+    });
+  } catch (error) { if (error.code === '23505') throw new HttpError(409, 'That email address is already used.'); throw error; }
+  if (body.password !== undefined) await endSessions('admin', id, id === req.session.user.id ? req.sessionID : '');
+  if (id === req.session.user.id && body.name !== undefined) req.session.user.name = textField(body.name, 80);
+  res.json({ ok: true, name: req.session.user.name });
 }));
 
 app.get('/api/admin/customers/:id', requireAdmin, wrap(async (req, res) => {
