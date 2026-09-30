@@ -62,8 +62,10 @@ const renderApp = (pathname, nowMs, { fetchImpl } = {}) => {
     getElementById: () => element(),
     addEventListener() {},
     head: { insertAdjacentHTML() {} },
-    body: { append() {}, insertAdjacentHTML() {} }
+    // Modal markup is pushed onto body, so it is recorded here for inspection.
+    body: { append() {}, insertAdjacentHTML: (position, html) => { modals.push(html); } }
   };
+  const modals = [];
   const fixedDate = nowMs === undefined ? Date : class extends Date {
     constructor(...args) { super(...(args.length ? args : [currentMs])); }
     static now() { return currentMs; }
@@ -101,6 +103,7 @@ const renderApp = (pathname, nowMs, { fetchImpl } = {}) => {
   const advanceTo = ms => { currentMs = ms; drain(); };
   return {
     get html() { return appRoot.innerHTML; },
+    get modals() { return modals.join(''); },
     run: expression => vm.runInContext(expression, sandbox),
     read: selector => (nodes.get(selector) || {}).textContent,
     drain,
@@ -133,7 +136,7 @@ test('prose dashes are gone and only numeric ranges remain', () => {
   // Em dashes are allowed only as an empty-value placeholder, en dashes only as range separators.
   const allowed = [/\|\|'\u2014'/, /: '\u2014'/, /\}\u2013\$\{/, /\)\u2013\$\{/];
   const dashes = [...bundle.matchAll(/[\u2013\u2014]/g)];
-  assert.equal(dashes.length, 5, `expected 5 remaining dashes, found ${dashes.length}`);
+  assert.equal(dashes.length, 6, `expected 6 remaining dashes, found ${dashes.length}`);
 
   for (const match of dashes) {
     const window = bundle.slice(Math.max(0, match.index - 12), match.index + 12);
@@ -201,6 +204,91 @@ test('the dashboard greeting follows the visitor device', async () => {
 });
 
 // Printable output must have content whether the document sits in a modal or inside #app.
+// Both notification views are rendered from the same harness the dashboard uses.
+const NOTIFICATION_PAGE = {
+  notifications: [{ id: 41, title: 'Card ready', body: 'Collect it at the counter.', type: 'security', is_read: false, created_at: '2026-09-02T09:15:00.000Z' }],
+  total: 13,
+  unread: 2,
+  limit: 12,
+  offset: 12
+};
+const ADMIN_OVERVIEW = {
+  customers: [{ id: 7, name: 'Amara Okafor', email: 'amara@aurumsim.test', status: 'ACTIVE' }],
+  accounts: [],
+  transactions: [],
+  settings: [],
+  logs: [],
+  administrators: [],
+  notificationCount: 13,
+  unreadNotifications: 2
+};
+
+const renderNotifications = async (pathname, session, fetchImpl, offset = 12) => {
+  const harness = renderApp(pathname, new Date(2026, 8, 15, 10, 0, 0).getTime(), { fetchImpl });
+  harness.run(`state.user = ${JSON.stringify(session)}`);
+  await harness.run(pathname === '/admin' ? `adminNotifications(${offset})` : `customerNotifications(${offset})`);
+  harness.drain();
+  return harness;
+};
+
+test('customers can dismiss one notification or clear the whole list', async () => {
+  const seen = [];
+  const harness = await renderNotifications('/', { id: 7, name: 'Amara', role: 'customer' }, async url => {
+    seen.push(String(url));
+    return { ok: true, json: async () => NOTIFICATION_PAGE };
+  });
+  const html = harness.html;
+
+  assert.match(html, /onclick="customerNotifications\(\)"/, 'the rail still returns to the page');
+  assert.match(html, /onclick="dismissNotification\(41\)"/, 'each row carries its own dismiss control');
+  assert.match(html, /onclick="clearNotifications\(\)"/, 'the header offers a clear-all action');
+  assert.match(html, /Showing 13\u201313 of 13/, 'pagination still reports the correct window');
+  assert.match(html, /2 unread/, 'the unread count is shown');
+  assert.match(html, /notification-new">New</, 'an unread message is marked');
+  assert.match(html, /notification-dot security/, 'the type drives the dot colour');
+
+  // Opening the page marks the messages read without asking the customer to click anything.
+  assert.ok(seen.includes('/api/customer/notifications?limit=12&offset=12'), 'the list is fetched');
+  assert.ok(seen.some(url => url === '/api/customer/notifications/read'), 'the view reports the page as read');
+
+  // Clear-all is destructive, so it must ask for confirmation instead of deleting on click.
+  harness.run('clearNotifications()');
+  const confirmation = harness.modals;
+  assert.match(confirmation, /onclick="confirmClearNotifications\(\)"/, 'the confirmation runs the clear-all request');
+  assert.match(confirmation, /onclick="closeModal\(\)">Keep them</, 'the confirmation offers a way out');
+  assert.doesNotMatch(confirmation, /window\.print\(\)/, 'the confirmation is not a receipt sheet');
+});
+
+test('the administrator notification console mirrors the transaction console', async () => {
+  const harness = await renderNotifications('/admin', { id: 2, name: 'Root', role: 'admin' }, async url => {
+    const target = String(url);
+    if (target.includes('/api/admin/overview')) return { ok: true, json: async () => ADMIN_OVERVIEW };
+    return { ok: true, json: async () => ({ ...NOTIFICATION_PAGE, notifications: NOTIFICATION_PAGE.notifications.map(n => ({ ...n, customer_name: 'Amara Okafor', customer_email: 'amara@aurumsim.test', admin_name: 'Root' })) }) };
+  });
+  const html = harness.html;
+
+  assert.match(html, /onclick="adminNotifications\(\)"/, 'the administrator rail lists Notifications');
+  assert.match(html, /onclick="newNotification\(\)">Add notification</, 'a composer button sits where Add transaction sits');
+  assert.match(html, /onclick="editNotification\(41\)"/, 'every message can be edited');
+  assert.match(html, /onclick="deleteNotification\(41\)"/, 'every message can be removed');
+  assert.match(html, /id="notification-filter"/, 'the page is filterable');
+  assert.match(html, /name="search"/, 'message text is searchable');
+  // The overview card counts the same messages so an administrator sees the workload at a glance.
+  await harness.run('adminDashboard()');
+  assert.match(harness.html, /<span>Notifications<\/span><b>13 sent<\/b><strong>2 unread<\/strong>/, 'the overview card reports the message count');
+
+  // The composer exposes words, type, date and time, and read state. It lives in the closure
+  // beside the transaction form, so it is opened through the window handler instead.
+  harness.run('newNotification()');
+  const form = harness.modals;
+  for (const field of ['name="userId"', 'name="title"', 'name="body"', 'name="type"', 'name="createdAt"', 'name="isRead"']) {
+    assert.match(form, new RegExp(field), `the composer must include ${field}`);
+  }
+  assert.match(form, /<textarea name="body"/, 'the message body is a multi-line field');
+  assert.match(form, /Send notification/, 'the composer sends the message');
+  assert.match(form, /maxlength="500"/, 'the message has a generous but bounded length');
+});
+
 test('print rules keep statements and receipts on paper', () => {
   const print = bundle.match(/@page\{margin:14mm\}@media print\{[\s\S]*?\n/);
   assert.ok(print, 'the print stylesheet must ship');

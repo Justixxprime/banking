@@ -40,3 +40,17 @@ Added the private administrator Transaction history page. Administrators can fil
 ### Status after 0.2.5
 
 Added protected customer Notifications and Statements pages. Notifications are paginated from the existing Postgres table. Customers can generate a private, printable statement for only one of their own fictional accounts and a date range of up to 366 days. The generated statement is a view of existing records, not a new stored financial document. `docs/CLAUDE_CODE_HANDOFF.md` explains how to continue safely with Claude Code on Windows after a session ends.
+
+### Status after 0.2.6
+
+Print and Save-as-PDF output works for receipts and long statements. Migration 4 rewrote retired warning wording that older releases had stored as data, so removing it from the source files alone was not enough. The dashboard time-zone strip is gone; the greeting and date still follow the visitor device. `node --test` guards the print rules, the asset list, and the absence of retired wording in shipped front-end files.
+
+### Status after 0.2.7
+
+Notifications became administrator-authored records. Migration 5 adds `type`, `is_read`, `sent_at`, nullable `admin_id`, and nullable `updated_at` to `notifications`, with an index on `admin_id`; old rows survive with their original date as unread `general` messages and no recorded author. Every writer goes through `sendNotification()`. `created_at` is the customer-visible date an administrator may correct, while `sent_at` is the internal write time and is never editable.
+
+Done and verified: the customer Notifications page paginates, marks itself read on open, and offers per-message dismiss plus a confirm-protected Clear all, all scoped to the signed-in profile. The private `/admin` console lists with type/customer/read/text filters and pagination, creates, edits every visible field including the date, deletes, and audits each write. The customer payload excludes `admin_id`, `sent_at`, and `updated_at`. `GET /api/customer/dashboard` and `GET /api/admin/overview` report unread counts. Retired wording is refused in the composer, and an unknown `type` is refused instead of being rewritten so a saved message cannot disappear from the filters.
+
+Tested: `test/notifications-api.test.js` exercises the routes over a stubbed pool and session store; `test/ui-copy.test.js` renders both new views and the console inside a minimal DOM. `npm test` passes 23 tests with no database connection. `npm run db:verify-notifications` (`scripts/verify-notifications-e2e.js`) then runs the complete flow against the Neon dev branch over real HTTP with signed-in throwaway accounts, which are deleted at the end so row counts for `notifications`, `audit_logs`, `users`, and `admin_users` are identical before and after. That script refuses to run with `NODE_ENV=production`. Do not point automated tests at the Neon production branch.
+
+Next: exercise the notification pages by hand in a browser (layout, the dismiss and Clear all confirmations, the console forms in a short window), then continue with the remaining NEXT_STEPS items. Notification deletion for an administrator account is intentionally still unavailable, and a notification has no "archived" state: dismissing or clearing removes the row, which is what the customer asked for.

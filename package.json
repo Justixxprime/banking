@@ -1,6 +1,6 @@
 {
   "name": "aurum",
-  "version": "0.2.0",
+  "version": "0.2.7",
   "private": true,
   "description": "A modern digital banking experience with accounts, transfers, statements, and an administrator console.",
   "main": "src/server.js",
@@ -12,6 +12,7 @@
     "dev": "node --watch src/server.js",
     "test": "node --test",
     "db:migrate-from-sqlite": "node scripts/migrate-sqlite-to-postgres.js",
+    "db:verify-notifications": "node scripts/verify-notifications-e2e.js",
     "admin:reset-local": "node scripts/reset-local-admin.js"
   },
   "dependencies": {

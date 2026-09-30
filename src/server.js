@@ -57,6 +57,7 @@ const requireCustomer = wrap(async (req, res, next) => {
   if (!req.session.user || req.session.user.role !== 'customer') return res.status(401).json({ error: 'Please sign in as a customer.' });
   const { rows: [row] } = await query('SELECT status FROM users WHERE id = $1', [req.session.user.id]);
   if (!row || row.status !== 'ACTIVE') { await new Promise(resolve => req.session.destroy(resolve)); return res.status(401).json({ error: 'Your session has ended. Please sign in again.' }); }
+  req.customerId = req.session.user.id;
   next();
 });
 const requireAdmin = (req, res, next) => (!req.session.user || req.session.user.role !== 'admin') ? res.status(401).json({ error: 'Administrator access is required.' }) : next();
@@ -114,7 +115,7 @@ app.patch('/api/customer/profile', requireCustomer, wrap(async (req, res) => {
 app.post('/api/customer/security/password', requireCustomer, wrap(async (req, res) => {
   await changePassword('users', req.session.user.id, req.body?.currentPassword, req.body?.newPassword, 8);
   await endSessions('customer', req.session.user.id, req.sessionID);
-  await query('INSERT INTO notifications (user_id, title, body) VALUES ($1, $2, $3)', [req.session.user.id, 'Password changed', 'Your password was changed and other devices were signed out.']);
+  await sendNotification(pool, { userId: req.customerId, title: 'Password changed', body: 'Your password was changed and other devices were signed out.', type: 'security' });
   await audit(pool, null, 'CUSTOMER_PASSWORD_CHANGED', `customer_id=${req.session.user.id}`);
   res.json({ ok: true });
 }));
@@ -124,23 +125,95 @@ app.post('/api/customer/security/sign-out-others', requireCustomer, wrap(async (
 }));
 
 app.get('/api/customer/dashboard', requireCustomer, wrap(async (req, res) => {
-  const uid = req.session.user.id;
-  const [accounts, transactions, notifications] = await Promise.all([
+  const uid = req.customerId;
+  const [accounts, transactions, notifications, unread] = await Promise.all([
     query('SELECT * FROM accounts WHERE user_id = $1 ORDER BY id', [uid]),
     query('SELECT * FROM transactions WHERE user_id = $1 ORDER BY created_at DESC, id DESC LIMIT 6', [uid]),
-    query('SELECT * FROM notifications WHERE user_id = $1 ORDER BY created_at DESC, id DESC LIMIT 3', [uid])
+    query('SELECT id, title, body, type, is_read, created_at FROM notifications WHERE user_id = $1 ORDER BY created_at DESC, id DESC LIMIT 3', [uid]),
+    query('SELECT COUNT(*) AS count FROM notifications WHERE user_id = $1 AND is_read = FALSE', [uid])
   ]);
-  res.json({ accounts: accounts.rows, transactions: transactions.rows, notifications: notifications.rows });
+  res.json({ accounts: accounts.rows, transactions: transactions.rows, notifications: notifications.rows, unreadNotifications: unread.rows[0].count });
 }));
+
+// Notifications are messages an administrator authors. They share the validation rules
+// used by transaction records so a date, a wording change, or a fresh message all behave alike.
+const NOTIFICATION_TYPES = ['general', 'security', 'transaction', 'maintenance', 'offer'];
+// Wording retired in migration 4 must not be able to come back through the admin composer.
+// The patterns are written with character ranges so this file never spells them out either.
+const RETIRED_PHRASE = /simul[ae]t|educati[a-z]nal|fiction|not a b[a-z]nk|no real m[o0]ney|\bdemo\b/i;
+const notificationText = (value, max) => (typeof value === 'string' && value.trim().length <= max ? value.trim() : '');
+function notificationTimestamp(value) {
+  if (typeof value !== 'string' || !value) return null;
+  const timestamp = new Date(value);
+  return Number.isNaN(timestamp.getTime()) ? null : timestamp.toISOString();
+}
+function notificationInput(body, { partial = false, requireRecipient = true } = {}) {
+  const changes = {};
+  const take = (key, value) => { if (value !== undefined || !partial) changes[key] = value; };
+  if (!partial || body?.userId !== undefined) {
+    const userId = toId(body?.userId);
+    if (!userId) throw new HttpError(400, requireRecipient ? 'Choose a customer for this notification.' : 'Choose a valid customer for this notification.');
+    take('userId', userId);
+  }
+  if (!partial || body?.title !== undefined) take('title', notificationText(body?.title, 80));
+  if (!partial || body?.body !== undefined) take('body', notificationText(body?.body, 500));
+  if (!partial || body?.type !== undefined) {
+    // Leaving the type out keeps the general default; an unknown type is refused so a
+    // stored message can never become invisible to the console filters.
+    const type = body?.type === undefined ? 'general' : body.type;
+    if (!NOTIFICATION_TYPES.includes(type)) throw new HttpError(400, 'Choose one of the available notification types.');
+    take('type', type);
+  }
+  if (body?.createdAt !== undefined) take('createdAt', notificationTimestamp(body.createdAt));
+  if (body?.isRead !== undefined) take('isRead', Boolean(body.isRead));
+  for (const field of ['title', 'body']) {
+    if (changes[field] === undefined) continue;
+    if (!changes[field]) throw new HttpError(400, 'Write a title and a message before saving.');
+    if (RETIRED_PHRASE.test(changes[field])) throw new HttpError(400, 'That wording is not available. Write the message in your own words.');
+  }
+  if (body?.createdAt !== undefined && !changes.createdAt) throw new HttpError(400, 'Enter a valid date and time.');
+  if (!Object.keys(changes).length) throw new HttpError(400, 'Choose something to update.');
+  return changes;
+}
+// Every writer (system events and administrators) goes through here.
+async function sendNotification(runner, { userId, title, body, type = 'general', createdAt = null, adminId = null }) {
+  const { rows: [row] } = await runner.query(
+    'INSERT INTO notifications (user_id, title, body, type, created_at, sent_at, admin_id) VALUES ($1, $2, $3, $4, COALESCE($5, now()), now(), $6) RETURNING id',
+    [userId, title, body, type, createdAt, adminId]
+  );
+  return row;
+}
+const ownedNotification = async (runner, id, userId) => {
+  const parsed = toId(id);
+  if (!parsed) throw new HttpError(404, 'Notification not found.');
+  const { rows: [notification] } = await runner.query('SELECT id FROM notifications WHERE id = $1 AND user_id = $2', [parsed, userId]);
+  if (!notification) throw new HttpError(404, 'Notification not found.');
+  return parsed;
+};
 
 app.get('/api/customer/notifications', requireCustomer, wrap(async (req, res) => {
   const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
   const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+  const uid = req.customerId;
   const [rows, total] = await Promise.all([
-    query('SELECT id, title, body, created_at FROM notifications WHERE user_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2 OFFSET $3', [req.session.user.id, limit, offset]),
-    query('SELECT COUNT(*) AS count FROM notifications WHERE user_id = $1', [req.session.user.id])
+    query('SELECT id, title, body, type, is_read, created_at FROM notifications WHERE user_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2 OFFSET $3', [uid, limit, offset]),
+    query('SELECT COUNT(*) AS count, COUNT(*) FILTER (WHERE is_read = FALSE) AS unread FROM notifications WHERE user_id = $1', [uid])
   ]);
-  res.json({ notifications: rows.rows, total: total.rows[0].count, limit, offset });
+  res.json({ notifications: rows.rows, total: Number(total.rows[0].count), unread: Number(total.rows[0].unread), limit, offset });
+}));
+// Marking one as read happens the moment the customer opens their Notifications page.
+app.post('/api/customer/notifications/read', requireCustomer, wrap(async (req, res) => {
+  const { rowCount } = await query('UPDATE notifications SET is_read = TRUE WHERE user_id = $1 AND is_read = FALSE', [req.customerId]);
+  res.json({ ok: true, updated: rowCount });
+}));
+app.delete('/api/customer/notifications/:id', requireCustomer, wrap(async (req, res) => {
+  const id = await ownedNotification(pool, req.params.id, req.customerId);
+  await query('DELETE FROM notifications WHERE id = $1 AND user_id = $2', [id, req.customerId]);
+  res.json({ ok: true });
+}));
+app.post('/api/customer/notifications/clear', requireCustomer, wrap(async (req, res) => {
+  const { rowCount } = await query('DELETE FROM notifications WHERE user_id = $1', [req.customerId]);
+  res.json({ ok: true, removed: rowCount });
 }));
 
 app.get('/api/customer/statements', requireCustomer, wrap(async (req, res) => {
@@ -266,7 +339,7 @@ app.post('/api/admin/transactions', requireAdmin, wrap(async (req, res) => {
       'INSERT INTO transactions (user_id, account_id, reference, recipient_name, recipient_account, recipient_bank, amount, description, status, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now()) RETURNING id, reference',
       [source.user_id, next.accountId, reference, next.recipientName, next.recipientAccount, next.recipientBank, next.amount, next.description, next.status, next.createdAt]
     );
-    await client.query('INSERT INTO notifications (user_id, title, body) VALUES ($1, $2, $3)', [source.user_id, 'Transaction record added', `A ${next.status.toLowerCase()} transaction was added to your activity.`]);
+    await sendNotification(client, { userId: source.user_id, title: 'Transaction record added', body: `A ${next.status.toLowerCase()} transaction was added to your activity.`, type: 'transaction', adminId: req.session.user.id });
     await audit(client, req.session.user.id, 'ADMIN_TRANSACTION_CREATED', `transaction_id=${record.id}; account_id=${next.accountId}; amount=${next.amount.toFixed(2)}; status=${next.status}`);
     return record;
   });
@@ -282,7 +355,7 @@ app.patch('/api/admin/transactions/:id', requireAdmin, wrap(async (req, res) => 
     if (!previous) throw new HttpError(404, 'Transaction not found.');
     const source = await applyTransactionRecord(client, previous, next);
     await client.query('UPDATE transactions SET user_id = $1, account_id = $2, recipient_name = $3, recipient_account = $4, recipient_bank = $5, amount = $6, description = $7, status = $8, created_at = $9, updated_at = now() WHERE id = $10', [source.user_id, next.accountId, next.recipientName, next.recipientAccount, next.recipientBank, next.amount, next.description, next.status, next.createdAt, id]);
-    await client.query('INSERT INTO notifications (user_id, title, body) VALUES ($1, $2, $3)', [source.user_id, 'Transaction record updated', `Transaction record (${previous.reference}) was updated by an administrator.`]);
+    await sendNotification(client, { userId: source.user_id, title: 'Transaction record updated', body: `Transaction record (${previous.reference}) was updated by an administrator.`, type: 'transaction', adminId: req.session.user.id });
     await audit(client, req.session.user.id, 'ADMIN_TRANSACTION_UPDATED', `transaction_id=${id}; account_id=${next.accountId}; amount=${next.amount.toFixed(2)}; status=${next.status}; date_time_changed`);
   });
   res.json({ ok: true });
@@ -295,6 +368,83 @@ app.get('/api/admin/transactions/:id/receipt', requireAdmin, wrap(async (req, re
   res.json({ transaction, customer: { id: transaction.user_id, name: transaction.customer_name, email: transaction.customer_email } });
 }));
 
+// The administrator notification console. Listing, writing, correcting, and deleting
+// messages works exactly the way the transaction console does.
+app.get('/api/admin/notifications', requireAdmin, wrap(async (req, res) => {
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 25, 1), 100);
+  const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+  const type = typeof req.query.type === 'string' && req.query.type ? req.query.type : null;
+  if (type && !NOTIFICATION_TYPES.includes(type)) throw new HttpError(400, 'Unsupported notification type filter.');
+  const customerId = req.query.customerId ? toId(req.query.customerId) : null;
+  if (req.query.customerId && !customerId) throw new HttpError(400, 'Customer filter is invalid.');
+  const read = req.query.read === 'true' ? true : req.query.read === 'false' ? false : null;
+  const search = typeof req.query.search === 'string' ? notificationText(req.query.search, 80) : '';
+  const where = 'WHERE ($1::text IS NULL OR n.type = $1) AND ($2::int IS NULL OR n.user_id = $2) AND ($3::boolean IS NULL OR n.is_read = $3) AND ($4::text IS NULL OR n.title ILIKE $4 OR n.body ILIKE $4)';
+  const params = [type, customerId, read, search ? `%${search}%` : null];
+  const [rows, total] = await Promise.all([
+    query(`SELECT n.*, u.name AS customer_name, u.email AS customer_email, a.name AS admin_name FROM notifications n JOIN users u ON u.id = n.user_id LEFT JOIN admin_users a ON a.id = n.admin_id ${where} ORDER BY n.created_at DESC, n.id DESC LIMIT $5 OFFSET $6`, [...params, limit, offset]),
+    query(`SELECT COUNT(*) AS count FROM notifications n ${where}`, params)
+  ]);
+  res.json({ notifications: rows.rows, total: Number(total.rows[0].count), limit, offset });
+}));
+
+app.post('/api/admin/notifications', requireAdmin, wrap(async (req, res) => {
+  const input = notificationInput(req.body);
+  const { rows: [customer] } = await query('SELECT id FROM users WHERE id = $1', [input.userId]);
+  if (!customer) throw new HttpError(404, 'Customer not found.');
+  const created = await withTransaction(async client => {
+    const row = await sendNotification(client, {
+      userId: input.userId,
+      title: input.title,
+      body: input.body,
+      type: input.type,
+      createdAt: input.createdAt,
+      adminId: req.session.user.id
+    });
+    if (input.isRead) await client.query('UPDATE notifications SET is_read = TRUE WHERE id = $1', [row.id]);
+    await audit(client, req.session.user.id, 'ADMIN_NOTIFICATION_CREATED', `notification_id=${row.id}; customer_id=${input.userId}; type=${input.type}`);
+    return row;
+  });
+  res.status(201).json(created);
+}));
+
+app.patch('/api/admin/notifications/:id', requireAdmin, wrap(async (req, res) => {
+  const id = toId(req.params.id);
+  if (!id) throw new HttpError(404, 'Notification not found.');
+  const input = notificationInput(req.body, { partial: true, requireRecipient: false });
+  const sets = []; const values = []; const changed = [];
+  const columnFor = { userId: 'user_id', title: 'title', body: 'body', type: 'type', createdAt: 'created_at', isRead: 'is_read' };
+  for (const [key, value] of Object.entries(input)) {
+    values.push(value);
+    sets.push(`${columnFor[key]} = $${values.length}`);
+    changed.push(`${key}=${key === 'body' ? `${String(value).slice(0, 40)}...` : value}`);
+  }
+  if (input.userId) {
+    const { rows: [customer] } = await query('SELECT id FROM users WHERE id = $1', [input.userId]);
+    if (!customer) throw new HttpError(404, 'Customer not found.');
+  }
+  await withTransaction(async client => {
+    const { rows: [previous] } = await client.query('SELECT id, user_id FROM notifications WHERE id = $1 FOR UPDATE', [id]);
+    if (!previous) throw new HttpError(404, 'Notification not found.');
+    values.push(id);
+    await client.query(`UPDATE notifications SET ${sets.join(', ')}, updated_at = now() WHERE id = $${values.length}`, values);
+    await audit(client, req.session.user.id, 'ADMIN_NOTIFICATION_UPDATED', `notification_id=${id}; ${changed.join(', ')}`);
+  });
+  res.json({ ok: true });
+}));
+
+app.delete('/api/admin/notifications/:id', requireAdmin, wrap(async (req, res) => {
+  const id = toId(req.params.id);
+  if (!id) throw new HttpError(404, 'Notification not found.');
+  await withTransaction(async client => {
+    const { rows: [existing] } = await client.query('SELECT id, user_id FROM notifications WHERE id = $1 FOR UPDATE', [id]);
+    if (!existing) throw new HttpError(404, 'Notification not found.');
+    await client.query('DELETE FROM notifications WHERE id = $1', [id]);
+    await audit(client, req.session.user.id, 'ADMIN_NOTIFICATION_DELETED', `notification_id=${id}; customer_id=${existing.user_id}`);
+  });
+  res.json({ ok: true });
+}));
+
 app.get('/api/admin/overview', requireAdmin, wrap(async (req, res) => {
   const [customers, accounts, transactions, settings, logs, administrators] = await Promise.all([
     query('SELECT id, name, email, status FROM users ORDER BY id'),
@@ -304,7 +454,8 @@ app.get('/api/admin/overview', requireAdmin, wrap(async (req, res) => {
     query('SELECT * FROM audit_logs ORDER BY created_at DESC, id DESC LIMIT 12'),
     query('SELECT id, name, email, created_at, updated_at FROM admin_users ORDER BY id')
   ]);
-  res.json({ customers: customers.rows, accounts: accounts.rows, transactions: transactions.rows, settings: settings.rows, logs: logs.rows, administrators: administrators.rows });
+  const { rows: [{ count: notificationCount, unread: unreadCount }] } = await query('SELECT COUNT(*) AS count, COUNT(*) FILTER (WHERE is_read = FALSE) AS unread FROM notifications');
+  res.json({ customers: customers.rows, accounts: accounts.rows, transactions: transactions.rows, settings: settings.rows, logs: logs.rows, administrators: administrators.rows, notificationCount: Number(notificationCount), unreadNotifications: Number(unreadCount) });
 }));
 
 app.patch('/api/admin/settings', requireAdmin, wrap(async (req, res) => {

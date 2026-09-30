@@ -4,7 +4,7 @@ This is a learning/portfolio deployment for **fictional simulator data only**. A
 
 ## Before you begin
 
-1. Run `npm test` locally. It should say `pass 3` (or more as tests are added).
+1. Run `npm test` locally. It should say `pass 23` (or more as tests are added). If you changed notification routes, also run `npm run db:verify-notifications` against the Neon `dev` branch.
 2. Commit and push the source code to GitHub. Never add `.env` to Git; it contains secrets.
 3. In Neon, keep local work on the `dev` branch. Use the empty `production` branch only for the live Render site.
 

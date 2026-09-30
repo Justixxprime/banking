@@ -151,6 +151,23 @@ const migrations = [
       SET recipient_bank = 'Aurum'
       WHERE recipient_bank ~* 'simul[ae]t|educati[a-z]nal|fiction|demo';
     `
+  },
+  {
+    id: 5,
+    name: 'administrator notifications',
+    sql: `
+      -- Notifications used to be write-only system events. They are now messages an
+      -- administrator authors, so each one carries a type, a read flag, and provenance.
+      -- created_at stays the moment the customer sees, and an administrator may correct it.
+      -- sent_at is the real clock time the record was written and is never editable.
+      ALTER TABLE notifications
+        ADD COLUMN type TEXT NOT NULL DEFAULT 'general',
+        ADD COLUMN is_read BOOLEAN NOT NULL DEFAULT FALSE,
+        ADD COLUMN sent_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        ADD COLUMN admin_id INTEGER REFERENCES admin_users(id),
+        ADD COLUMN updated_at TIMESTAMPTZ;
+      CREATE INDEX notifications_admin_idx ON notifications (admin_id);
+    `
   }
 ];
 
