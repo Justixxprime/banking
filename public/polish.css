@@ -1,0 +1,242 @@
+/* ==========================================================================
+   v15 POLISH
+   Loaded LAST in index.html so it wins over every older stylesheet.
+   1. Safe areas (header no longer hides under the phone status bar)
+   2. Balance card: chart line moved off the buttons, 4 clean action tiles
+   3. Cinematic motion: staggered reveals, page leave, loading bar, curtain
+   4. Touch feel: press states, ripple, focus rings, hover lift
+   ========================================================================== */
+
+:root{
+  --sat:env(safe-area-inset-top,0px);
+  --sab:env(safe-area-inset-bottom,0px);
+  --ease:cubic-bezier(.22,1,.36,1);
+  --spring:cubic-bezier(.34,1.56,.64,1);
+}
+
+html{background:#0c2f2c;-webkit-text-size-adjust:100%}
+html:has(.shell2){background:#f2f5f1}
+body{
+  -webkit-tap-highlight-color:transparent;
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+  overscroll-behavior-y:none;
+}
+/* removes the old 300ms tap delay on phones, so every tap feels instant */
+button,a,[role=button],label,select,input,summary{touch-action:manipulation}
+::selection{background:#cde8a4;color:#0a2624}
+
+/* ---------- 1. SAFE AREAS ---------- */
+/* public site header */
+.pnav{padding-top:calc(14px + var(--sat))}
+.pnav.solid{padding-top:calc(10px + var(--sat))}
+.pmobile.open{top:calc(64px + var(--sat))}
+/* sign in page */
+.lgn-art{padding-top:calc(44px + var(--sat))}
+/* signed in app header */
+.tb{
+  box-sizing:border-box;
+  height:calc(68px + var(--sat));
+  padding-top:var(--sat);
+  background:rgba(244,247,243,.82);
+  -webkit-backdrop-filter:saturate(1.6) blur(18px);
+  backdrop-filter:saturate(1.6) blur(18px);
+}
+/* full screen send money screen */
+.tf{box-sizing:border-box;padding-top:var(--sat)}
+@media(max-width:900px){
+  .phero{padding-top:calc(100px + var(--sat))}
+  .lgn-art{padding-top:calc(28px + var(--sat))}
+  .tb{height:calc(60px + var(--sat))}
+}
+
+/* ---------- 2. BALANCE CARD ---------- */
+.tot{
+  --pad:30px;
+  padding:var(--pad);
+  min-height:0;
+  justify-content:flex-start;
+  isolation:isolate;
+  background:
+    radial-gradient(90% 120% at 100% 0%,rgba(205,232,164,.22),transparent 55%),
+    radial-gradient(70% 90% at 0% 100%,rgba(27,90,82,.55),transparent 60%),
+    linear-gradient(165deg,#10403a 0%,#0a2624 100%);
+  box-shadow:0 34px 60px -30px rgba(10,38,36,.65),inset 0 1px 0 rgba(255,255,255,.08);
+}
+@media(max-width:600px){.tot{--pad:20px}}
+/* a slow light sweep across the card */
+.tot::after{
+  content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;z-index:0;
+  background:linear-gradient(115deg,transparent 35%,rgba(255,255,255,.07) 48%,transparent 60%);
+  transform:translateX(-120%);
+  animation:sheen 6s 1.4s var(--ease) infinite;
+}
+@keyframes sheen{0%{transform:translateX(-120%)}40%,100%{transform:translateX(120%)}}
+
+.tot .amt{
+  background:linear-gradient(180deg,#ffffff 20%,#cfe6df 100%);
+  -webkit-background-clip:text;background-clip:text;
+  -webkit-text-fill-color:transparent;color:transparent;
+}
+
+/* the chart now sits in its own band, no longer behind the buttons */
+.tot svg.spark{
+  position:relative!important;display:block;
+  left:auto;right:auto;bottom:auto;max-width:none;
+  width:calc(100% + var(--pad)*2)!important;
+  height:88px!important;
+  margin:18px calc(var(--pad)*-1) 0;
+  opacity:1;
+  -webkit-mask-image:linear-gradient(90deg,transparent 0,#000 12%,#000 88%,transparent 100%);
+  mask-image:linear-gradient(90deg,transparent 0,#000 12%,#000 88%,transparent 100%);
+}
+.tot .spark path.a{fill:rgba(205,232,164,.10)}
+.tot .spark path.l{stroke-width:2.5;filter:drop-shadow(0 0 6px rgba(205,232,164,.65))}
+
+/* four equal action tiles */
+.tot .acts{
+  position:relative;z-index:1;
+  display:grid!important;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:10px;margin-top:16px;
+}
+.tot .acts button{
+  position:relative;overflow:hidden;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:9px;min-height:84px;padding:14px 6px 12px;
+  border-radius:22px;
+  border:1px solid rgba(255,255,255,.12);
+  background:linear-gradient(180deg,rgba(255,255,255,.13),rgba(255,255,255,.05));
+  color:#eaf4f1;
+  font:700 12.5px/1.15 Manrope,system-ui,sans-serif;
+  letter-spacing:.005em;text-align:center;
+  -webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.1);
+  transition:transform .35s var(--spring),background .25s,box-shadow .25s,border-color .25s;
+}
+.tot .acts button span{display:block;text-wrap:balance}
+.tot .acts button svg{
+  width:24px;height:24px;flex-shrink:0;
+  stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;
+  transition:transform .4s var(--spring);
+}
+.tot .acts button.p{
+  background:linear-gradient(180deg,#dcf0b6,#c3e08f);
+  color:#0a2624;border-color:transparent;
+  box-shadow:0 14px 30px -10px rgba(205,232,164,.65),inset 0 1px 0 rgba(255,255,255,.55);
+}
+@media(hover:hover){
+  .tot .acts button:hover{transform:translateY(-3px);border-color:rgba(205,232,164,.45)}
+  .tot .acts button.p:hover{border-color:transparent;box-shadow:0 18px 36px -10px rgba(205,232,164,.8),inset 0 1px 0 rgba(255,255,255,.55)}
+  .tot .acts button:hover svg{transform:translateY(-1px) scale(1.12)}
+}
+.tot .acts button:active{transform:scale(.94)}
+@media(max-width:360px){.tot .acts{gap:7px}.tot .acts button{font-size:11.5px;min-height:78px}}
+
+/* ---------- 3. MOTION ---------- */
+@keyframes mhrise{from{opacity:0;transform:translateY(20px) scale(.985)}}
+/* "backwards" (not "both") so tap and hover effects still work after the entrance ends */
+.mh-in{animation:mhrise .7s var(--ease) backwards;animation-delay:calc(var(--mi,0)*45ms)}
+/* old per-page entrances are replaced by the staggered one above */
+.dv>*{animation:none}
+.page{animation:none}
+/* background refreshes (polling) must never replay animations */
+.no-anim,.no-anim *{animation-duration:.001ms!important;animation-delay:0s!important;animation-iteration-count:1!important}
+
+/* page is dimmed the instant you tap, while the next one loads */
+.is-leaving{
+  opacity:.4;transform:translateY(6px) scale(.995);
+  transition:opacity .2s ease,transform .3s var(--ease);
+  pointer-events:none;
+}
+.dv.is-swapping .acctcard,.dv.is-swapping .dv-cols{
+  opacity:.45;transform:scale(.985);
+  transition:opacity .2s ease,transform .3s var(--ease);
+}
+
+/* switching between accounts */
+@keyframes mhswap{from{opacity:0;transform:translateX(28px) rotate(1.2deg) scale(.97)}}
+.mh-swap{animation:mhswap .6s var(--ease) backwards}
+@keyframes mhpop{from{transform:scale(.95)}}
+.tile.on{animation:mhpop .5s var(--spring) backwards}
+
+/* thin loading bar at the very top */
+#nprog{
+  position:fixed;left:0;top:var(--sat);height:3px;width:100%;z-index:5000;pointer-events:none;
+  transform-origin:0 50%;transform:scaleX(0);opacity:0;
+  background:linear-gradient(90deg,#7ee0d0,#cde8a4);
+  box-shadow:0 0 12px rgba(205,232,164,.8);
+}
+#nprog.on{opacity:1;transform:scaleX(.82);transition:transform 6s cubic-bezier(.1,.7,.2,1),opacity .15s}
+#nprog.done{opacity:0;transform:scaleX(1);transition:transform .25s ease,opacity .35s .2s}
+
+/* the iris curtain when you sign in or out */
+#curtain{
+  position:fixed;inset:0;z-index:4500;display:grid;place-items:center;pointer-events:none;
+  background:radial-gradient(80% 70% at 50% 40%,#17564d,#0a2624);
+  color:#fff;text-align:center;
+  clip-path:circle(150% at 50% 50%);
+  animation:mhiris .8s cubic-bezier(.7,0,.2,1) .35s forwards;
+}
+@keyframes mhiris{to{clip-path:circle(0% at 50% 50%)}}
+#curtain .cm{animation:mhcm .5s var(--ease) both;padding:0 24px}
+#curtain .cm img{display:block;margin:0 auto 16px;border-radius:20px}
+#curtain .cm b{display:block;font-size:26px;letter-spacing:-.03em;font-weight:800}
+#curtain .cm small{display:block;margin-top:6px;color:#a9cbc5;letter-spacing:.2em;text-transform:uppercase;font-size:11px}
+@keyframes mhcm{from{opacity:0;transform:translateY(12px) scale(.96)}}
+/* content waits for the curtain to open before it rises */
+body.curtain-on .mh-in{animation-delay:calc(.5s + var(--mi,0)*45ms)}
+
+/* splash leaves with a soft zoom */
+#splash.out{transform:scale(1.06)}
+
+/* ---------- 4. TOUCH FEEL ---------- */
+button{transition:transform .25s var(--ease),background-color .25s,box-shadow .25s,opacity .2s,border-color .25s,color .2s}
+button:not(:disabled):active,.tile:active{transform:scale(.97)}
+.tx{transition:background-color .2s,transform .25s var(--ease)}
+.tx:active{background:#f1f6f3;transform:scale(.985)}
+:focus-visible{outline:2px solid #7ee0d0;outline-offset:3px}
+input:focus-visible,select:focus-visible,textarea:focus-visible{outline:0}
+.lgn-card input:focus,.tf .f input:focus{border-color:#1b5a52;box-shadow:0 0 0 4px rgba(27,90,82,.16)}
+
+/* ripple */
+.cta,.tf-cta,.tile,.tabbar button,.sm-g button,.signin,.btn-glow,.btn-ghost{position:relative;overflow:hidden}
+.rip{
+  position:absolute;border-radius:50%;pointer-events:none;
+  background:rgba(255,255,255,.32);transform:scale(0);
+  animation:mhrip .6s var(--ease) forwards;
+}
+.cta .rip,.tile .rip,.sm-g .rip{background:rgba(12,47,44,.14)}
+@keyframes mhrip{to{transform:scale(1);opacity:0}}
+
+/* desktop hover lift on cards */
+@media(hover:hover){
+  .card2,.acctcard{transition:transform .45s var(--ease),box-shadow .45s var(--ease)}
+  .card2:hover,.acctcard:hover{transform:translateY(-3px);box-shadow:0 26px 50px -28px rgba(10,38,36,.35)}
+  .tile:hover{transform:translateY(-2px)}
+}
+
+/* unread badge gently pulses */
+@keyframes mhping{0%{box-shadow:0 0 0 0 rgba(214,74,58,.55)}100%{box-shadow:0 0 0 10px rgba(214,74,58,0)}}
+.bell i,.tb-ic i{animation:mhping 2.4s ease-out infinite}
+
+/* tab bar: glassier, active icon lifts */
+@media(max-width:900px){
+  .tabbar{border:1px solid rgba(255,255,255,.08);-webkit-backdrop-filter:saturate(1.5) blur(18px);backdrop-filter:saturate(1.5) blur(18px)}
+  .tabbar button svg{transition:transform .4s var(--spring)}
+  .tabbar button.active svg{transform:translateY(-1px) scale(1.1)}
+}
+
+/* ---------- LEGAL STRIP: scrolls instead of being cut off ---------- */
+.fict span{display:block;overflow:hidden;white-space:nowrap;text-overflow:clip}
+.fict .mq{display:inline-flex;font-weight:inherit;will-change:transform}
+.fict .mq i{font-style:normal;padding-right:2.6em}
+@media(max-width:760px){.fict .mq{animation:mhmq 24s linear infinite}}
+@media(min-width:761px){.fict .mq i+i{display:none}.fict .mq{padding-right:0}.fict .mq i{padding-right:0}.fict span{text-align:center}}
+@keyframes mhmq{to{transform:translateX(-50%)}}
+
+/* ---------- RESPECT "REDUCE MOTION" ---------- */
+@media(prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.01ms!important;animation-delay:0s!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
+  #curtain{display:none}
+}

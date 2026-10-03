@@ -15,3 +15,7 @@ The administrator and customer profile frontend is implemented. Production confi
 Customer Notifications and the private `/admin` Notifications console are both live and wired to secured routes. Migration 5 gives `notifications` a type, a read flag, an internal send time, and the authoring administrator. Customers can dismiss one message or clear their list; administrators can list with filters, write, correct, and delete messages, and every change is audited. Automated coverage is `npm test` (23 tests, no database connection required) plus `npm run db:verify-notifications`, which drives the full flow over real HTTP on the Neon dev branch with throwaway accounts that are removed again.
 
 Remaining: browser form verification of the new notification pages, and the outstanding items in `docs/NEXT_STEPS.md`.
+
+## v15 update
+
+Mobile safe areas, the four tile quick actions, cinematic page motion and faster loading are in (see `docs/CHANGELOG.md`). Verified with a simulated DOM test of `app-v15.js`; a real phone check is still needed. `test/ui-copy.test.js` has 4 older failures that existed before v15 (wording rules that the newer "Fictional bank" strip contradicts).
