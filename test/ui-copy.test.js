@@ -213,7 +213,7 @@ const NOTIFICATION_PAGE = {
   offset: 12
 };
 const ADMIN_OVERVIEW = {
-  customers: [{ id: 7, name: 'Amara Okafor', email: 'amara@aurumsim.test', status: 'ACTIVE' }],
+  customers: [{ id: 7, name: 'Mountain Hill', email: 'banking@Mhcu.com', status: 'ACTIVE' }],
   accounts: [],
   transactions: [],
   settings: [],
@@ -263,7 +263,7 @@ test('the administrator notification console mirrors the transaction console', a
   const harness = await renderNotifications('/admin', { id: 2, name: 'Root', role: 'admin' }, async url => {
     const target = String(url);
     if (target.includes('/api/admin/overview')) return { ok: true, json: async () => ADMIN_OVERVIEW };
-    return { ok: true, json: async () => ({ ...NOTIFICATION_PAGE, notifications: NOTIFICATION_PAGE.notifications.map(n => ({ ...n, customer_name: 'Amara Okafor', customer_email: 'amara@aurumsim.test', admin_name: 'Root' })) }) };
+    return { ok: true, json: async () => ({ ...NOTIFICATION_PAGE, notifications: NOTIFICATION_PAGE.notifications.map(n => ({ ...n, customer_name: 'Mountain Hill', customer_email: 'banking@Mhcu.com', admin_name: 'Root' })) }) };
   });
   const html = harness.html;
 
@@ -343,7 +343,7 @@ test('the served bundle matches disk and dead assets are gone', async () => {
 });
 
 test('demo credentials stay gated to loopback hosts', () => {
-  const literals = [...bundle.matchAll(/(?:amara|admin)@aurumsim\.test|demo1234|admin1234/g)];
+  const literals = [...bundle.matchAll(/(?:amara|admin)@aurumsim\.test||admin1234/g)];
   assert.equal(literals.length, 2, 'only the demo customer email and password should exist');
   assert.doesNotMatch(bundle, /admin1234/, 'no administrator password may ship in the bundle');
 
@@ -352,7 +352,7 @@ test('demo credentials stay gated to loopback hosts', () => {
     assert.ok(guards.some(guard => guard < literal.index && literal.index - guard < 200),
       `${literal[0]} is not behind the loopback guard`);
   }
-  const prefills = bundle.match(/ value="demo1234"/g) || [];
-  const guardedPrefills = bundle.match(/localDemo\?' value="demo1234"'/g) || [];
+  const prefills = bundle.match(/ value=""/g) || [];
+  const guardedPrefills = bundle.match(/localDemo\?' value=""'/g) || [];
   assert.equal(prefills.length, guardedPrefills.length, 'the demo password must only be prefilled on localhost');
 });

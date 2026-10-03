@@ -47,3 +47,17 @@ Administrator side: a Notifications console mirrors the transaction console, wit
 Tests: added `test/notifications-api.test.js` (nine route tests over a stubbed pool and session store) and extended `test/ui-copy.test.js` for both new views, the console, and the print rules. `npm test` covers 23 tests. Added `scripts/verify-notifications-e2e.js` and the `npm run db:verify-notifications` command, which exercise the full flow against the Neon dev branch through real HTTP sign-in with throwaway accounts that are removed afterwards, confirming the database is left exactly as it was found.
 
 Fixed the notification card layout so the dismiss button rule is applied after the base `.notification-card` rule; the earlier order meant the three-column grid and the "new" chip were overridden by the plainer two-column definition.
+
+## v15 polish (mobile safe areas, quick actions, cinematic motion)
+
+Safe areas: the public header, sign in page, signed in header and the full screen send money view now add `env(safe-area-inset-top)`, so the logo and avatar no longer hide under the phone status bar.
+
+Balance card: the chart line moved out from behind the buttons into its own band. Send money, Pay bills, Cards and Send abroad are now four equal icon tiles built by `public/app-v15.js` (the emoji button from v14 is replaced, the `#abroad` id is kept).
+
+Motion: staggered reveal of every screen, instant dim on tap while the next page loads, top loading bar while the server answers, count up on balances, a card slide when switching accounts, an iris curtain on sign in and sign out, ripple on buttons. Background refreshes (the 15 second poll) never replay animations. All of it respects "reduce motion".
+
+Speed: splash leaves as soon as the first screen is drawn (about 1.1 seconds minimum instead of 1.7 plus waiting for every asset), tap delay removed, optional gzip through the `compression` package (run `npm install`), service worker cache renamed to `mh-shell-v2`.
+
+Fonts: Inter replaced by Manrope everywhere in the front end (project rule: avoid Inter).
+
+Files: new `public/polish.css` (loaded last) and `public/app-v15.js`. `index.html`, `sw.js`, `src/server.js` and `package.json` edited. To undo the whole polish, remove the `polish.css` link and the `app-v15.js` script from `public/index.html`.

@@ -169,6 +169,118 @@ const migrations = [
       CREATE INDEX notifications_admin_idx ON notifications (admin_id);
     `
   }
+  ,{
+    id: 6,
+    name: 'card settings, payees, goals',
+    sql: `
+      CREATE TABLE card_settings (
+        user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        frozen BOOLEAN NOT NULL DEFAULT FALSE,
+        online BOOLEAN NOT NULL DEFAULT TRUE,
+        international BOOLEAN NOT NULL DEFAULT TRUE,
+        contactless BOOLEAN NOT NULL DEFAULT TRUE,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE TABLE payees (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        category TEXT NOT NULL,
+        color TEXT NOT NULL DEFAULT '#15555a',
+        reference TEXT NOT NULL,
+        typical_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+        due_day INTEGER,
+        last_paid_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX payees_user_idx ON payees (user_id);
+      CREATE TABLE goals (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        target NUMERIC(14,2) NOT NULL,
+        saved NUMERIC(14,2) NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX goals_user_idx ON goals (user_id);
+    `
+  }
+  ,{
+    id: 7,
+    name: 'transfer pin',
+    sql: `
+      ALTER TABLE users ADD COLUMN transfer_pin_hash TEXT;
+      ALTER TABLE users ADD COLUMN transfer_pin_updated_at TIMESTAMPTZ;
+      ALTER TABLE users ADD COLUMN pin_failed_attempts INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE users ADD COLUMN pin_locked_until TIMESTAMPTZ;
+    `
+  }
+  ,{
+    id: 8,
+    name: 'delivery methods, support desk, admin card freeze',
+    sql: `
+      ALTER TABLE transactions ADD COLUMN delivery_method TEXT;
+      ALTER TABLE transactions ADD COLUMN settles_at TIMESTAMPTZ;
+      ALTER TABLE transactions ADD COLUMN progress_at TIMESTAMPTZ;
+      ALTER TABLE card_settings ADD COLUMN admin_frozen BOOLEAN NOT NULL DEFAULT FALSE;
+      CREATE TABLE support_tickets (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        subject TEXT NOT NULL,
+        category TEXT NOT NULL DEFAULT 'General',
+        status TEXT NOT NULL DEFAULT 'OPEN',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX support_tickets_user_idx ON support_tickets (user_id, updated_at DESC);
+      CREATE TABLE support_messages (
+        id SERIAL PRIMARY KEY,
+        ticket_id INTEGER NOT NULL REFERENCES support_tickets(id) ON DELETE CASCADE,
+        sender TEXT NOT NULL,
+        body TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX support_messages_ticket_idx ON support_messages (ticket_id, id);
+    `
+  }
+  ,{
+    id: 9,
+    name: 'admin account details, failure reasons',
+    sql: `
+      ALTER TABLE accounts ADD COLUMN manual_hold NUMERIC(14,2) NOT NULL DEFAULT 0 CHECK (manual_hold >= 0);
+      ALTER TABLE accounts ADD COLUMN apy NUMERIC(5,2);
+      ALTER TABLE transactions ADD COLUMN failure_reason TEXT;
+    `
+  }
+  ,{
+    id: 10,
+    name: 'status labels, transfer-type controls, account restrictions',
+    sql: `
+      ALTER TABLE transactions ADD COLUMN status_label TEXT;
+      ALTER TABLE transactions ADD COLUMN status_message TEXT;
+      ALTER TABLE accounts ADD COLUMN blocked_methods TEXT NOT NULL DEFAULT '';
+      ALTER TABLE accounts ADD COLUMN restriction TEXT NOT NULL DEFAULT 'NONE';
+      ALTER TABLE accounts ADD COLUMN restriction_message TEXT;
+    `
+  }
+  ,{
+    id: 11,
+    name: 'transfer fees',
+    sql: `ALTER TABLE transactions ADD COLUMN fee NUMERIC(14,2) NOT NULL DEFAULT 0 CHECK (fee >= 0);`
+  },
+  {
+    id: 12,
+    name: 'international wires',
+    sql: `ALTER TABLE transactions
+      ADD COLUMN IF NOT EXISTS intl_country TEXT,
+      ADD COLUMN IF NOT EXISTS intl_currency TEXT,
+      ADD COLUMN IF NOT EXISTS fx_rate NUMERIC(18,8),
+      ADD COLUMN IF NOT EXISTS dest_amount NUMERIC(18,2),
+      ADD COLUMN IF NOT EXISTS swift_bic TEXT,
+      ADD COLUMN IF NOT EXISTS bank_type TEXT,
+      ADD COLUMN IF NOT EXISTS beneficiary_address TEXT,
+      ADD COLUMN IF NOT EXISTS charges TEXT;`
+  }
 ];
 
 async function initializeDatabase() {
@@ -193,7 +305,7 @@ async function seedDatabase() {
 
   if (demo && counts.users === 0 && counts.admins === 0) {
     await withTransaction(async client => {
-      const customer = (await client.query('INSERT INTO users (name, email, password_hash) VALUES ($1, $2, $3) RETURNING id', ['Amara Okafor', 'amara@aurumsim.test', bcrypt.hashSync('demo1234', 12)])).rows[0];
+      const customer = (await client.query('INSERT INTO users (name, email, password_hash) VALUES ($1, $2, $3) RETURNING id', ['Mountain Hill', 'banking@Mhcu.com', bcrypt.hashSync('', 12)])).rows[0];
       await client.query('INSERT INTO admin_users (name, email, password_hash) VALUES ($1, $2, $3)', ['Aurum Administrator', 'admin@aurumsim.test', bcrypt.hashSync('admin1234', 12)]);
       const accountSql = 'INSERT INTO accounts (user_id, name, account_type, account_number, balance, available_balance) VALUES ($1, $2, $3, $4, $5, $5) RETURNING id';
       const everyday = (await client.query(accountSql, [customer.id, 'Everyday Account', 'CURRENT', '2098746310', 8500])).rows[0];

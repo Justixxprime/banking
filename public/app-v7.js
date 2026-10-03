@@ -1,0 +1,27 @@
+// v7: admin transfer-PIN controls (per customer, all customers, unlock).
+setTimeout(() => {
+  const esc = escapeText, $ = (s, r = document) => r.querySelector(s), $$ = (s, r = document) => [...r.querySelectorAll(s)];
+  const modal = (title, body) => { closeModal(); document.body.insertAdjacentHTML('beforeend', `<div class="modal-v2" style="z-index:350"><div><div class="topline"><h2>${title}</h2><button class="close" type="button" onclick="closeModal()">Close</button></div>${body}</div></div>`); };
+  const show = (title, pin) => modal(title, `<p class="muted">The PIN is stored encrypted, so it can only be shown once. Share it with the customer securely.</p><div class="res-amt" style="font-family:'DM Mono',monospace;letter-spacing:.2em;text-align:center;margin:18px 0">${esc(pin)}</div><button class="cta modal-submit" style="width:100%" onclick="navigator.clipboard?.writeText('${esc(pin)}');toast('PIN copied.')">Copy PIN</button>`);
+  const gen = () => String(Math.floor(Math.random() * 1000000)).padStart(6, '0');
+
+  window.adminPinFor = (id, name) => {
+    modal(`Transfer PIN \u2013 ${esc(name)}`, `<form id="pf"><div class="form-field"><label>New 6-digit PIN</label><input name="pin" inputmode="numeric" maxlength="6" pattern="\\d{6}" placeholder="Leave empty to generate one"></div><button class="cta modal-submit" style="width:100%">Save PIN</button></form><div style="display:flex;gap:10px;margin-top:12px"><button class="secondary-button" id="pg" style="flex:1">Generate random</button><button class="secondary-button" id="pu" style="flex:1">Unlock account</button></div>`);
+    $('#pf').onsubmit = async e => { e.preventDefault(); const pin = e.target.pin.value.trim(); try { const r = await api(`/api/admin/customers/${id}/transfer-pin`, { method: 'POST', body: JSON.stringify(pin ? { pin } : {}) }); show('PIN saved', r.pin); } catch (err) { toast(err.message); } };
+    $('#pg').onclick = async () => { try { const r = await api(`/api/admin/customers/${id}/transfer-pin`, { method: 'POST', body: '{}' }); show('New PIN generated', r.pin); } catch (err) { toast(err.message); } };
+    $('#pu').onclick = async () => { try { await api(`/api/admin/customers/${id}/unlock-pin`, { method: 'POST', body: '{}' }); closeModal(); toast('Transfers unlocked.'); } catch (err) { toast(err.message); } };
+  };
+  window.adminPinAll = () => {
+    modal('Transfer PINs \u2013 all customers', `<p class="muted" style="line-height:1.55">Choose one PIN for everyone, or generate a different random PIN for each customer. Customers who have never been given a PIN use the default <b>123456</b>.</p><form id="pa"><div class="form-field"><label>Same PIN for all customers</label><input name="pin" inputmode="numeric" maxlength="6" placeholder="6 digits, or leave empty to generate one"></div><button class="cta modal-submit" style="width:100%">Set for all customers</button></form><button class="secondary-button" id="pq" style="width:100%;margin-top:12px">Generate a unique PIN for each customer</button>`);
+    $('#pa').onsubmit = async e => { e.preventDefault(); const pin = e.target.pin.value.trim(); if (!confirm('Replace every customer\u2019s transfer PIN?')) return; try { const r = await api('/api/admin/transfer-pin/all', { method: 'POST', body: JSON.stringify(pin ? { pin } : {}) }); show(`PIN set for ${r.count} customers`, r.pin); } catch (err) { toast(err.message); } };
+    $('#pq').onclick = async () => { if (!confirm('Replace every customer\u2019s transfer PIN with a unique random one?')) return; try { const r = await api('/api/admin/transfer-pin/all', { method: 'POST', body: JSON.stringify({ unique: true }) }); modal('Unique PINs generated', `<p class="muted">Shown once. Copy this list now.</p><div style="max-height:300px;overflow:auto;border:1px solid var(--line);border-radius:14px">${r.pins.map(p => `<div class="review-row"><span>${esc(p.name)}<br><small>${esc(p.email)}</small></span><b style="font-family:'DM Mono',monospace;letter-spacing:.12em">${esc(p.pin)}</b></div>`).join('')}</div><button class="cta modal-submit" style="width:100%;margin-top:14px" id="cp">Copy list</button>`); $('#cp').onclick = () => { navigator.clipboard?.writeText(r.pins.map(p => `${p.name} <${p.email}>: ${p.pin}`).join('\n')); toast('Copied.'); }; } catch (err) { toast(err.message); } };
+  };
+
+  const base = window.adminCustomers;
+  if (base) window.adminCustomers = async (...a) => {
+    await base(...a);
+    const anchor = $('table') || $('.surface'); 
+    if (anchor && !$('.pin-bar')) anchor.insertAdjacentHTML('beforebegin', `<div class="surface pin-bar" style="margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap"><div><b>Transfer PINs</b><div class="muted" style="font-size:14px">Customers must enter a 6-digit PIN to send money.</div></div><button class="cta" onclick="adminPinAll()">Set PIN for all customers</button></div>`);
+    $$('button[onclick^="editCustomer("]').forEach(btn => { const id = /\((\d+)\)/.exec(btn.getAttribute('onclick'))?.[1]; if (!id || btn.parentElement.querySelector('.adm-pin')) return; const row = btn.closest('tr') || btn.closest('article') || btn.parentElement; const name = (row.querySelector('b,strong,td')?.textContent || 'customer').trim().replace(/'/g, ''); btn.parentElement.insertAdjacentHTML('beforeend', `<button class="text-button adm-pin" onclick="adminPinFor(${id},'${esc(name)}')">PIN</button>`); });
+  };
+}, 0);
